@@ -2345,8 +2345,8 @@ menu_install_update() {
         local installed_version="N/A"
         if [[ -f "$INSTALL_PATH" ]]; then
             installed="yes"
-            installed_version="$(sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p' "$INSTALL_PATH" 2>/dev/null | head -1)"
-        [[ -z "$installed_version" ]] && installed_version="unknown"
+            installed_version="$(extract_script_version_from_file "$INSTALL_PATH" 2>/dev/null || true)"
+            [[ -z "$installed_version" ]] && installed_version="unknown"
         fi
 
         printf '  Installed:       %s\n' "$installed"
@@ -2376,6 +2376,97 @@ menu_install_update() {
     done
 }
 
+extract_script_version_from_file() {
+    local script_path="${1:-}"
+    [[ -n "$script_path" && -f "$script_path" ]] || return 1
+
+    local version=""
+    version="$(sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p' "$script_path" 2>/dev/null | head -1)"
+    [[ -n "$version" ]] || return 1
+    printf '%s' "$version"
+}
+
+fetch_remote_version() {
+    local timeout_sec="${1:-10}"
+    local remote_version=""
+
+    if [[ "$HAS_CURL" -eq 1 ]]; then
+        remote_version="$(curl -fsSL --max-time "$timeout_sec" "$SCRIPT_RAW_URL" 2>/dev/null \
+            | sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p' | head -1 || true)"
+    elif [[ "$HAS_WGET" -eq 1 ]]; then
+        remote_version="$(wget -qO- --timeout="$timeout_sec" "$SCRIPT_RAW_URL" 2>/dev/null \
+            | sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p' | head -1 || true)"
+    fi
+
+    [[ -n "$remote_version" ]] || return 1
+    printf '%s' "$remote_version"
+}
+
+download_remote_script() {
+    local output_path="${1:-}"
+    local timeout_sec="${2:-30}"
+    [[ -n "$output_path" ]] || return 1
+
+    if [[ "$HAS_CURL" -eq 1 ]]; then
+        curl -fsSL --max-time "$timeout_sec" "$SCRIPT_RAW_URL" -o "$output_path" 2>/dev/null || return 1
+    elif [[ "$HAS_WGET" -eq 1 ]]; then
+        wget -qO "$output_path" --timeout="$timeout_sec" "$SCRIPT_RAW_URL" 2>/dev/null || return 1
+    else
+        return 1
+    fi
+
+    [[ -s "$output_path" ]] || return 1
+}
+
+validate_downloaded_script() {
+    local script_path="${1:-}"
+    local expected_version="${2:-}"
+    [[ -n "$script_path" && -s "$script_path" ]] || return 1
+
+    if ! head -c 2 "$script_path" 2>/dev/null | grep -q '^#!'; then
+        return 1
+    fi
+
+    local downloaded_version=""
+    downloaded_version="$(extract_script_version_from_file "$script_path" 2>/dev/null || true)"
+    [[ -n "$downloaded_version" ]] || return 1
+
+    if [[ -n "$expected_version" ]] && [[ "$downloaded_version" != "$expected_version" ]]; then
+        return 1
+    fi
+}
+
+install_script_atomically() {
+    local source_path="${1:-}"
+    local target_path="${2:-$INSTALL_PATH}"
+    [[ -n "$source_path" && -f "$source_path" ]] || return 1
+
+    local source_real target_real
+    source_real="$(realpath -m "$source_path" 2>/dev/null || echo "$source_path")"
+    target_real="$(realpath -m "$target_path" 2>/dev/null || echo "$target_path")"
+    if [[ "$source_real" == "$target_real" ]]; then
+        chmod +x -- "$target_path" 2>/dev/null || return 1
+        return 0
+    fi
+
+    local target_dir staged_file
+    target_dir="$(dirname "$target_path")"
+    staged_file="$(mktemp "${target_dir}/.vps-cleaner-stage.XXXXXX")" || return 1
+
+    if ! cp -- "$source_path" "$staged_file" 2>/dev/null; then
+        rm -f -- "$staged_file" 2>/dev/null || true
+        return 1
+    fi
+    if ! chmod +x -- "$staged_file" 2>/dev/null; then
+        rm -f -- "$staged_file" 2>/dev/null || true
+        return 1
+    fi
+    if ! mv -f -- "$staged_file" "$target_path" 2>/dev/null; then
+        rm -f -- "$staged_file" 2>/dev/null || true
+        return 1
+    fi
+}
+
 install_self() {
     echo ""
     if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -2384,11 +2475,10 @@ install_self() {
         return
     fi
 
-    cp -- "$SELF_PATH" "$INSTALL_PATH" 2>/dev/null || {
+    if ! install_script_atomically "$SELF_PATH" "$INSTALL_PATH"; then
         print_error "Failed to copy to $INSTALL_PATH"
         return
-    }
-    chmod +x "$INSTALL_PATH"
+    fi
     print_success "Installed to $INSTALL_PATH"
     log_action "install" "install" "0"
 }
@@ -2402,14 +2492,7 @@ check_update() {
 
     printf '  Checking for updates...\n'
     local remote_version=""
-
-    if [[ "$HAS_CURL" -eq 1 ]]; then
-        remote_version="$(curl -fsSL --max-time 10 "$SCRIPT_RAW_URL" 2>/dev/null \
-            | sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p' | head -1 || true)"
-    elif [[ "$HAS_WGET" -eq 1 ]]; then
-        remote_version="$(wget -qO- --timeout=10 "$SCRIPT_RAW_URL" 2>/dev/null \
-            | sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p' | head -1 || true)"
-    fi
+    remote_version="$(fetch_remote_version 10 2>/dev/null || true)"
 
     if [[ -z "$remote_version" ]]; then
         print_warning "Could not fetch remote version."
@@ -2425,12 +2508,31 @@ check_update() {
     if [[ "$remote_version" != "$SCRIPT_VERSION" ]]; then
         print_info "A newer version ($remote_version) is available."
         if confirm "Download and install update?"; then
-            if [[ "$HAS_CURL" -eq 1 ]]; then
-                curl -fsSL --max-time 30 "$SCRIPT_RAW_URL" -o "$INSTALL_PATH" 2>/dev/null
-            elif [[ "$HAS_WGET" -eq 1 ]]; then
-                wget -qO "$INSTALL_PATH" --timeout=30 "$SCRIPT_RAW_URL" 2>/dev/null
+            local temp_download=""
+            temp_download="$(mktemp "${TMPDIR:-/tmp}/vps-cleaner-update.XXXXXX")" || {
+                print_error "Failed to create temporary file for update."
+                return
+            }
+
+            if ! download_remote_script "$temp_download" 30; then
+                rm -f -- "$temp_download" 2>/dev/null || true
+                print_error "Failed to download update."
+                return
             fi
-            chmod +x "$INSTALL_PATH"
+
+            if ! validate_downloaded_script "$temp_download" "$remote_version"; then
+                rm -f -- "$temp_download" 2>/dev/null || true
+                print_error "Downloaded update failed validation."
+                return
+            fi
+
+            if ! install_script_atomically "$temp_download" "$INSTALL_PATH"; then
+                rm -f -- "$temp_download" 2>/dev/null || true
+                print_error "Failed to install update to $INSTALL_PATH."
+                return
+            fi
+            rm -f -- "$temp_download" 2>/dev/null || true
+
             print_success "Updated to v${remote_version}. Restart the script to use the new version."
             log_action "update" "updated-to-$remote_version" "0"
         fi
@@ -2472,13 +2574,8 @@ auto_update_check() {
     if (( diff < 86400 )); then return; fi
 
     local remote_version=""
-    if [[ "$HAS_CURL" -eq 1 ]]; then
-        remote_version="$(curl -fsSL --max-time 5 "$SCRIPT_RAW_URL" 2>/dev/null \
-            | sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p' | head -1 || true)"
-    elif [[ "$HAS_WGET" -eq 1 ]]; then
-        remote_version="$(wget -qO- --timeout=5 "$SCRIPT_RAW_URL" 2>/dev/null \
-            | sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p' | head -1 || true)"
-    fi
+    remote_version="$(fetch_remote_version 5 2>/dev/null || true)"
+    [[ -z "$remote_version" ]] && return
 
     LAST_UPDATE_CHECK="$now"
     save_config
