@@ -18,10 +18,10 @@
 
 ```bash
 # Install with curl
-curl -fsSL https://raw.githubusercontent.com/user/vps-cleaner/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.sh | bash
 
 # Or with wget
-wget -qO- https://raw.githubusercontent.com/user/vps-cleaner/main/install.sh | bash
+wget -qO- https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.sh | bash
 ```
 
 Then simply run:
@@ -47,35 +47,12 @@ vps-cleaner
 - **Safe by design** — protected paths, confirmations, dry-run mode
 - **Colorful UI** with progress bars, spinners, and Unicode box drawing
 
-## Screenshot
-
-```
-╭─────────────────────────────────────────────╮
-│  🧹 VPS Cleaner v1.0.0                     │
-│  Distro: Ubuntu 22.04                      │
-│  Disk: 15.2G / 50.0G (30%)                 │
-╰─────────────────────────────────────────────╯
-
-  1)  📊 Disk Space Overview
-  2)  🚀 Quick Clean (Safe)
-  3)  📋 System Logs Cleanup
-  4)  📦 Package Manager Cleanup
-  5)  🗂️  Cache Cleanup
-  6)  🐳 Docker Cleanup
-  7)  📎 Snap/Flatpak Cleanup
-  8)  🔍 Find Large Files
-  9)  🗑️  Full Deep Clean
- 10)  ⚙️  Settings
- 11)  📥 Install/Update vps-cleaner
-  0)  🚪 Exit
-```
-
 ## Installation
 
 ### One-liner Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/user/vps-cleaner/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.sh | bash
 ```
 
 This downloads the script and installs it to `/usr/local/bin/vps-cleaner`.
@@ -83,7 +60,7 @@ This downloads the script and installs it to `/usr/local/bin/vps-cleaner`.
 ### Manual Install
 
 ```bash
-git clone https://github.com/user/vps-cleaner.git
+git clone https://github.com/WeOneGuy/vps-cleaner.git
 cd vps-cleaner
 chmod +x vps-cleaner.sh
 sudo cp vps-cleaner.sh /usr/local/bin/vps-cleaner

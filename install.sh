@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="https://raw.githubusercontent.com/user/vps-cleaner/main"
+REPO_URL="https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main"
 INSTALL_PATH="/usr/local/bin/vps-cleaner"
 SCRIPT_NAME="vps-cleaner.sh"
 CONF_FILE="$HOME/.vps-cleaner.conf"

@@ -2,7 +2,7 @@
 # ============================================================================
 # vps-cleaner — Comprehensive VPS Disk Cleaner
 # Version:  1.0.0
-# GitHub:   https://github.com/user/vps-cleaner
+# GitHub:   https://github.com/WeOneGuy/vps-cleaner
 # License:  MIT
 # ============================================================================
 # A production-quality, interactive disk cleanup tool for Linux VPS instances.
@@ -17,8 +17,8 @@ set -euo pipefail
 
 readonly SCRIPT_VERSION="1.0.0"
 readonly SCRIPT_NAME="vps-cleaner"
-readonly SCRIPT_REPO="https://github.com/user/vps-cleaner"
-readonly SCRIPT_RAW_URL="https://raw.githubusercontent.com/user/vps-cleaner/main/vps-cleaner.sh"
+readonly SCRIPT_REPO="https://github.com/WeOneGuy/vps-cleaner"
+readonly SCRIPT_RAW_URL="https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/vps-cleaner.sh"
 readonly CONFIG_FILE="${HOME}/.vps-cleaner.conf"
 readonly LOG_FILE="/var/log/vps-cleaner.log"
 readonly SELF_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
