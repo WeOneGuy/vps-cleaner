@@ -251,14 +251,28 @@ delete_rotated_logs() {
 }
 
 # Record starting disk usage
+get_total_used_bytes() {
+    df -P -k -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk '
+        NR > 1 {
+            fs=$1; mp=$6
+            if (fs ~ /^\/var\/lib\/docker\/rootfs\/overlayfs\//) next
+            if (fs ~ /^\/var\/lib\/docker\/overlay2\//) next
+            if (mp ~ /^\/var\/lib\/docker\/rootfs\/overlayfs\//) next
+            if (mp ~ /^\/var\/lib\/docker\/overlay2\//) next
+            s += $3 * 1024
+        }
+        END { printf "%d", s + 0 }
+    '
+}
+
 record_disk_start() {
-    DISK_START_USED=$(df -k / 2>/dev/null | awk 'NR==2 {printf "%d", $3 * 1024}') || DISK_START_USED=0
+    DISK_START_USED="$(get_total_used_bytes)" || DISK_START_USED=0
 }
 
 # Calculate freed space since last recorded start
 calc_freed_since_start() {
     local current_used
-    current_used=$(df -k / 2>/dev/null | awk 'NR==2 {printf "%d", $3 * 1024}') || current_used=0
+    current_used="$(get_total_used_bytes)" || current_used=0
     local freed=$(( DISK_START_USED - current_used ))
     (( freed < 0 )) && freed=0
     echo "$freed"
@@ -388,7 +402,7 @@ get_disk_summary_line() {
 # Always reads from /dev/tty so stdin piping never interferes
 confirm() {
     local prompt="${1:-Continue?}"
-    local default="${2:-n}"
+    local default="${2:-y}"
     local reply=""
 
     if [[ "$default" == "y" ]]; then
@@ -405,7 +419,10 @@ confirm() {
 
     reply="$(echo "$reply" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     reply="${reply:-$default}"
-    [[ "${reply,,}" == "y" || "${reply,,}" == "yes" ]]
+    case "${reply,,}" in
+        y|yes|д|да) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # Read numeric choice
