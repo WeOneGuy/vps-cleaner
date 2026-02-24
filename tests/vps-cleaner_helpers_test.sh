@@ -33,6 +33,14 @@ assert_failure() {
     fi
 }
 
+assert_contains() {
+    local haystack="$1" needle="$2" msg="$3"
+    if [[ "$haystack" != *"$needle"* ]]; then
+        printf 'FAIL: %s\nExpected to find: %s\nIn: %s\n' "$msg" "$needle" "$haystack" >&2
+        exit 1
+    fi
+}
+
 test_truncate_for_table() {
     assert_eq "$(truncate_for_table "short" 20)" "short" "does not alter short strings"
     assert_eq "$(truncate_for_table "1234567890" 5)" "12..." "truncates with ellipsis"
@@ -71,12 +79,28 @@ test_run_timed_pipeline() {
     fi
 }
 
+test_print_menu_contains_uninstall_option() {
+    BOLD="" RESET=""
+    local menu_output
+    menu_output="$(print_menu)"
+    assert_contains "$menu_output" "12) 🗑️  Uninstall vps-cleaner" "main menu includes uninstall option"
+}
+
+test_clean_all_logs_confirmation_keyword() {
+    local script_content
+    script_content="$(cat "$REPO_ROOT/vps-cleaner.sh")"
+    assert_contains "$script_content" 'Type "CONFIRM" to proceed' "clean_all_logs prompt uses CONFIRM"
+    assert_contains "$script_content" '[[ "$reply" != "CONFIRM" ]]' "clean_all_logs validates CONFIRM"
+}
+
 main() {
     test_truncate_for_table
     test_format_size
     test_should_skip_mountpoint
     test_should_skip_filesystem
     test_run_timed_pipeline
+    test_print_menu_contains_uninstall_option
+    test_clean_all_logs_confirmation_keyword
     printf 'PASS: vps-cleaner helper tests\n'
 }
 
