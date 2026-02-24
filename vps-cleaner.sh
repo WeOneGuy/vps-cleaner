@@ -23,6 +23,7 @@ readonly CONFIG_FILE="${HOME}/.vps-cleaner.conf"
 readonly LOG_FILE="/var/log/vps-cleaner.log"
 readonly SELF_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 readonly INSTALL_PATH="/usr/local/bin/vps-cleaner"
+readonly DISK_OVERVIEW_SCAN_TIMEOUT_SEC=45
 
 # Protected paths — NEVER delete these
 readonly PROTECTED_PATHS=(
@@ -673,7 +674,7 @@ offer_install_optional_deps() {
     print_warning "Optional dependencies missing: ${MISSING_OPTIONAL_DEPS[*]}"
     print_info "Some features may be limited."
 
-    if confirm "Install missing optional dependencies?"; then
+    if confirm "Install missing optional dependencies?" "y"; then
         for dep in "${MISSING_OPTIONAL_DEPS[@]}"; do
             [[ "$dep" == "curl or wget" ]] && dep="curl"
             [[ "$dep" == "tput" ]] && dep="ncurses-bin" # Common provider
@@ -842,7 +843,8 @@ show_disk_overview() {
     print_separator
 
     local top_dirs_output
-    if top_dirs_output="$(run_timed_pipeline 20 "du -x -h -d 2 / --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/snap --exclude=/var/lib/docker/rootfs/overlayfs --exclude=/var/lib/docker/overlay2 2>/dev/null | sort -rh | head -15")"; then
+    printf '  %s\n' "Scanning directories (can take up to ${DISK_OVERVIEW_SCAN_TIMEOUT_SEC}s)..."
+    if top_dirs_output="$(run_timed_pipeline "$DISK_OVERVIEW_SCAN_TIMEOUT_SEC" "du -x -h -d 2 / --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/snap --exclude=/var/lib/docker/rootfs/overlayfs --exclude=/var/lib/docker/overlay2 2>/dev/null | sort -rh | head -15")"; then
         while IFS= read -r dline; do
             [[ -z "$dline" ]] && continue
             printf '  %s\n' "$dline"
@@ -857,7 +859,8 @@ show_disk_overview() {
     print_separator
 
     local top_files_output
-    if top_files_output="$(run_timed_pipeline 20 "find /var /usr /home /root /opt /srv /tmp -xdev -type f -not -path '/var/lib/docker/rootfs/overlayfs/*' -not -path '/var/lib/docker/overlay2/*' -exec stat -c '%s %n' {} + 2>/dev/null | sort -rn | head -10")"; then
+    printf '  %s\n' "Scanning files (can take up to ${DISK_OVERVIEW_SCAN_TIMEOUT_SEC}s)..."
+    if top_files_output="$(run_timed_pipeline "$DISK_OVERVIEW_SCAN_TIMEOUT_SEC" "find /var /usr /home /root /opt /srv /tmp -xdev -type f -not -path '/var/lib/docker/rootfs/overlayfs/*' -not -path '/var/lib/docker/overlay2/*' -exec stat -c '%s %n' {} + 2>/dev/null | sort -rn | head -10")"; then
         while IFS=' ' read -r size fpath; do
             [[ -z "${size:-}" || -z "${fpath:-}" ]] && continue
             printf '  %10s  %s\n' "$(format_size "$size")" "$fpath"
