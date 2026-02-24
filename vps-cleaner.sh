@@ -386,6 +386,7 @@ confirm() {
 }
 
 # Read numeric choice
+READ_CHOICE_VALUE=""
 read_choice() {
     local prompt="${1:-Enter choice}" max="${2:-11}"
     local choice=""
@@ -399,7 +400,7 @@ read_choice() {
     fi
 
     choice="$(echo "$choice" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    printf '%s\n' "$choice"
+    READ_CHOICE_VALUE="$choice"
 }
 
 # Press enter to continue
@@ -933,7 +934,8 @@ menu_logs_cleanup() {
         echo ""
 
         local choice
-        choice=$(read_choice "Enter choice" 6)
+        read_choice "Enter choice" 6
+        choice="$READ_CHOICE_VALUE"
 
         case "$choice" in
             1) clean_rotated_logs ;;
@@ -1193,7 +1195,8 @@ menu_package_cleanup() {
         echo ""
 
         local choice
-        choice=$(read_choice "Enter choice" 5)
+        read_choice "Enter choice" 5
+        choice="$READ_CHOICE_VALUE"
 
         case "$choice" in
             1) clean_package_cache ;;
@@ -1367,7 +1370,8 @@ menu_cache_cleanup() {
         echo ""
 
         local choice
-        choice=$(read_choice "Enter choice" 9)
+        read_choice "Enter choice" 9
+        choice="$READ_CHOICE_VALUE"
 
         case "$choice" in
             1) clean_pkg_cache_interactive ;;
@@ -1545,7 +1549,8 @@ menu_docker_cleanup() {
         echo ""
 
         local choice
-        choice=$(read_choice "Enter choice" 7)
+        read_choice "Enter choice" 7
+        choice="$READ_CHOICE_VALUE"
 
         case "$choice" in
             1) docker_rm_stopped ;;
@@ -1997,7 +2002,8 @@ menu_settings() {
         echo ""
 
         local choice
-        choice=$(read_choice "Enter choice" 7)
+        read_choice "Enter choice" 7
+        choice="$READ_CHOICE_VALUE"
 
         case "$choice" in
             1)
@@ -2074,7 +2080,8 @@ menu_install_update() {
         echo ""
 
         local choice
-        choice=$(read_choice "Enter choice" 4)
+        read_choice "Enter choice" 4
+        choice="$READ_CHOICE_VALUE"
 
         case "$choice" in
             1) install_self ;;
@@ -2236,7 +2243,8 @@ main() {
         print_menu
 
         local choice
-        choice=$(read_choice "Enter choice" 11)
+        read_choice "Enter choice" 11
+        choice="$READ_CHOICE_VALUE"
 
         case "$choice" in
             1)  show_disk_overview ;;
