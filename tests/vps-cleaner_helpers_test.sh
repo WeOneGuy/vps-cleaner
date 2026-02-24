@@ -39,6 +39,13 @@ test_truncate_for_table() {
     assert_eq "$(truncate_for_table "abcdef" 3)" "abc" "truncates without ellipsis when width <= 3"
 }
 
+test_format_size() {
+    assert_eq "$(format_size 0)" "0 B" "formats bytes without unit scaling"
+    assert_eq "$(format_size 1024)" "1.00 KB" "formats kilobytes with 2 decimals"
+    assert_eq "$(format_size 1048576)" "1.00 MB" "formats megabytes with 2 decimals"
+    assert_eq "$(format_size 1572864)" "1.50 MB" "formats fractional megabytes with 2 decimals"
+}
+
 test_should_skip_mountpoint() {
     assert_success "skips docker rootfs overlay mount" should_skip_mountpoint "/var/lib/docker/rootfs/overlayfs/abc123"
     assert_success "skips docker overlay2 mount" should_skip_mountpoint "/var/lib/docker/overlay2/abc123"
@@ -66,6 +73,7 @@ test_run_timed_pipeline() {
 
 main() {
     test_truncate_for_table
+    test_format_size
     test_should_skip_mountpoint
     test_should_skip_filesystem
     test_run_timed_pipeline

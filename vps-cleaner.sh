@@ -157,30 +157,13 @@ log_action() {
 format_size() {
     local bytes="${1:-0}"
     if (( bytes < 0 )); then bytes=0; fi
-
-    if [[ "$HAS_BC" -eq 1 ]]; then
-        if (( bytes >= 1099511627776 )); then
-            printf '%s TB' "$(echo "scale=1; $bytes / 1099511627776" | bc)"
-        elif (( bytes >= 1073741824 )); then
-            printf '%s GB' "$(echo "scale=1; $bytes / 1073741824" | bc)"
-        elif (( bytes >= 1048576 )); then
-            printf '%s MB' "$(echo "scale=1; $bytes / 1048576" | bc)"
-        elif (( bytes >= 1024 )); then
-            printf '%s KB' "$(echo "scale=1; $bytes / 1024" | bc)"
-        else
-            printf '%s B' "$bytes"
-        fi
-    else
-        if (( bytes >= 1073741824 )); then
-            printf '%dG' "$(( bytes / 1073741824 ))"
-        elif (( bytes >= 1048576 )); then
-            printf '%dM' "$(( bytes / 1048576 ))"
-        elif (( bytes >= 1024 )); then
-            printf '%dK' "$(( bytes / 1024 ))"
-        else
-            printf '%dB' "$bytes"
-        fi
-    fi
+    awk -v b="$bytes" 'BEGIN {
+        if (b >= 1099511627776)      printf "%.2f TB", b / 1099511627776;
+        else if (b >= 1073741824)    printf "%.2f GB", b / 1073741824;
+        else if (b >= 1048576)       printf "%.2f MB", b / 1048576;
+        else if (b >= 1024)          printf "%.2f KB", b / 1024;
+        else                         printf "%d B", b;
+    }'
 }
 
 # Convert human-readable size strings (e.g. "1.2G") to bytes (approximate)
@@ -365,9 +348,18 @@ show_spinner() {
 }
 
 get_disk_summary_line() {
-    local line
-    line=$(df -h / 2>/dev/null | awk 'NR==2 {printf "%s / %s (%s)", $3, $2, $5}')
-    echo "${line:-N/A}"
+    local size_bytes used_bytes avail_bytes pct
+    read -r size_bytes used_bytes avail_bytes pct _ < <(df -P -B1 / 2>/dev/null | awk 'NR==2 {print $2, $3, $4, $5, $6}')
+    if [[ -z "${size_bytes:-}" || -z "${used_bytes:-}" || -z "${avail_bytes:-}" || -z "${pct:-}" ]]; then
+        echo "N/A"
+        return
+    fi
+
+    printf '%s / %s used, free %s (%s)' \
+        "$(format_size "$used_bytes")" \
+        "$(format_size "$size_bytes")" \
+        "$(format_size "$avail_bytes")" \
+        "$pct"
 }
 
 # Prompt user: returns 0 if user said yes
@@ -804,21 +796,25 @@ show_disk_overview() {
     printf '  %s%sFilesystem Usage:%s\n' "$BOLD" "$WHITE" "$RESET"
     print_separator
 
-    printf '  %-20s %8s %8s %8s %5s  %s\n' "Mount" "Size" "Used" "Avail" "Use%" "Bar"
+    printf '  %-20s %10s %10s %10s %5s  %s\n' "Mount" "Size" "Used" "Avail" "Use%" "Bar"
     print_separator
 
     while IFS= read -r line; do
         local fs mp sz used avail pct pct_num
+        local sz_h used_h avail_h
         read -r fs sz used avail pct mp _ <<< "$line"
         [[ -z "${mp:-}" ]] && continue
         should_skip_filesystem "$fs" && continue
         should_skip_mountpoint "$mp" && continue
         pct_num="${pct/\%/}"
+        sz_h="$(format_size "$sz")"
+        used_h="$(format_size "$used")"
+        avail_h="$(format_size "$avail")"
 
-        printf '  %-20s %8s %8s %8s %5s  ' "$(truncate_for_table "$mp" 20)" "$sz" "$used" "$avail" "$pct"
+        printf '  %-20s %10s %10s %10s %5s  ' "$(truncate_for_table "$mp" 20)" "$sz_h" "$used_h" "$avail_h" "$pct"
         draw_bar "$pct_num" 20
         printf '\n'
-    done < <(df -P -h -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {print}')
+    done < <(df -P -B1 -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {print}')
 
     # Inode usage
     echo ""
@@ -976,7 +972,13 @@ quick_clean() {
     echo ""
     local freed
     freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_success "Freed on filesystem: $(format_size "$freed")"
+    if (( total_est > 0 )); then
+        print_info "Estimated cleaned data: $(format_size "$total_est")"
+        if (( freed == 0 )); then
+            print_warning "Filesystem free space may update later (open files, reserved blocks, or delayed reclaim)."
+        fi
+    fi
     log_action "quick-clean" "total" "$freed"
 
     pause
