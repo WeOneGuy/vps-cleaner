@@ -24,11 +24,8 @@ curl -fsSL https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.s
 wget -qO- https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.sh | bash
 ```
 
-Then simply run:
-
-```bash
-vps-cleaner
-```
+This starts `vps-cleaner` in ephemeral mode (one-time run, no auto-install).
+If you want permanent installation, use menu option `11) Install/Update vps-cleaner`.
 
 ## Features
 
@@ -49,13 +46,15 @@ vps-cleaner
 
 ## Installation
 
-### One-liner Install
+### One-liner Launch (Ephemeral)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.sh | bash
 ```
 
-This downloads the script and installs it to `/usr/local/bin/vps-cleaner`.
+This downloads the script, runs it once, and removes the temporary file on exit.
+No automatic installation to `/usr/local/bin/vps-cleaner` is performed.
+Permanent install is optional from menu option `11) Install/Update vps-cleaner`.
 
 ### Manual Install
 

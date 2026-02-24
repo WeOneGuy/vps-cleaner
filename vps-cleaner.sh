@@ -2144,18 +2144,20 @@ menu_install_update() {
         printf '  1) Install to %s\n' "$INSTALL_PATH"
         printf '  2) Check for updates\n'
         printf '  3) Uninstall\n'
-        printf '  4) Back\n'
+        printf '  4) Install optional dependencies\n'
+        printf '  5) Back\n'
         echo ""
 
         local choice
-        read_choice "Enter choice" 4
+        read_choice "Enter choice" 5
         choice="$READ_CHOICE_VALUE"
 
         case "$choice" in
             1) install_self ;;
             2) check_update ;;
             3) uninstall_self ;;
-            4|"") return ;;
+            4) offer_install_optional_deps ;;
+            5|"") return ;;
             *) print_error "Invalid choice." ;;
         esac
     done
@@ -2292,9 +2294,6 @@ main() {
 
     # Record starting disk state
     record_disk_start
-
-    # Offer optional dep install (first run feel)
-    offer_install_optional_deps
 
     # Auto-update check (silent, fast)
     auto_update_check
