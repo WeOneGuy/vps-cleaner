@@ -1,0 +1,6 @@
+*.log
+*.bak
+*.swp
+*.tmp
+.DS_Store
+docs/plan/
