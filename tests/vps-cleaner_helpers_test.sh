@@ -79,6 +79,29 @@ test_run_timed_pipeline() {
     fi
 }
 
+test_get_find_size_bytes() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf -- "$tmpdir"' RETURN
+
+    printf 'abc' > "$tmpdir/a.log.1"
+    printf 'defgh' > "$tmpdir/b.log.2"
+    printf 'ignore' > "$tmpdir/c.txt"
+
+    local matched no_match
+    matched="$(get_find_size_bytes "$tmpdir" -name '*.log.*')"
+    no_match="$(get_find_size_bytes "$tmpdir" -name '*.does-not-exist')"
+
+    if [[ "$matched" -lt 8 ]]; then
+        printf 'FAIL: get_find_size_bytes should count matching files\n' >&2
+        exit 1
+    fi
+    assert_eq "$no_match" "0" "returns 0 for no matches"
+
+    rm -rf -- "$tmpdir"
+    trap - RETURN
+}
+
 test_print_menu_contains_uninstall_option() {
     BOLD="" RESET=""
     local menu_output
@@ -99,6 +122,7 @@ main() {
     test_should_skip_mountpoint
     test_should_skip_filesystem
     test_run_timed_pipeline
+    test_get_find_size_bytes
     test_print_menu_contains_uninstall_option
     test_clean_all_logs_confirmation_keyword
     printf 'PASS: vps-cleaner helper tests\n'

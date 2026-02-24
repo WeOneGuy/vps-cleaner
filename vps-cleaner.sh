@@ -35,6 +35,9 @@ readonly PROTECTED_PATHS=(
 
 # Pseudo-filesystems to exclude from searches
 readonly EXCLUDED_FS="/proc /sys /dev /run /snap"
+readonly ROTATED_LOG_FIND_ARGS=(
+    -name '*.gz' -o -name '*.old' -o -name '*.[0-9]' -o -name '*.[0-9][0-9]*' -o -name '*.xz' -o -name '*.zst'
+)
 
 # Temp file for operations
 TEMP_FILE=""
@@ -218,15 +221,33 @@ get_find_size_bytes() {
     # remaining args are find predicates
     if [[ -d "$dir" ]]; then
         if [[ "$HAS_DU_BYTES" -eq 1 ]]; then
-            find "$dir" "$@" -type f 2>/dev/null | xargs du -sb 2>/dev/null \
-                | awk '{s+=$1} END {printf "%d", s}' || echo 0
+            if (( $# > 0 )); then
+                find "$dir" -type f \( "$@" \) -exec du -sb -- {} + 2>/dev/null \
+                    | awk '{s+=$1} END {printf "%d", s+0}' || echo 0
+            else
+                find "$dir" -type f -exec du -sb -- {} + 2>/dev/null \
+                    | awk '{s+=$1} END {printf "%d", s+0}' || echo 0
+            fi
         else
-            find "$dir" "$@" -type f 2>/dev/null | xargs du -sk 2>/dev/null \
-                | awk '{s+=$1*1024} END {printf "%d", s}' || echo 0
+            if (( $# > 0 )); then
+                find "$dir" -type f \( "$@" \) -exec du -sk -- {} + 2>/dev/null \
+                    | awk '{s+=$1*1024} END {printf "%d", s+0}' || echo 0
+            else
+                find "$dir" -type f -exec du -sk -- {} + 2>/dev/null \
+                    | awk '{s+=$1*1024} END {printf "%d", s+0}' || echo 0
+            fi
         fi
     else
         echo 0
     fi
+}
+
+get_rotated_logs_size() {
+    get_find_size_bytes /var/log "${ROTATED_LOG_FIND_ARGS[@]}"
+}
+
+delete_rotated_logs() {
+    find /var/log -type f \( "${ROTATED_LOG_FIND_ARGS[@]}" \) -delete 2>/dev/null || true
 }
 
 # Record starting disk usage
@@ -881,7 +902,7 @@ quick_clean() {
     local size_rotated size_pkg_cache size_tmp size_thumb size_trash size_crash
 
     # Estimate sizes
-    size_rotated=$(get_find_size_bytes /var/log -name '*.gz' -o -name '*.old' -o -name '*.1' -o -name '*.2' -o -name '*.3' -o -name '*.4' -o -name '*.5')
+    size_rotated=$(get_rotated_logs_size)
     size_pkg_cache=$(estimate_pkg_cache_size)
     size_tmp=$(get_find_size_bytes /tmp -mtime +"$TEMP_FILE_AGE_DAYS")
     size_tmp=$(( size_tmp + $(get_find_size_bytes /var/tmp -mtime +"$TEMP_FILE_AGE_DAYS") ))
@@ -919,8 +940,7 @@ quick_clean() {
     # 1. Rotated logs
     printf '  Cleaning rotated logs...'
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        find /var/log -type f \( -name '*.gz' -o -name '*.old' -o -name '*.1' -o -name '*.2' \
-            -o -name '*.3' -o -name '*.4' -o -name '*.5' \) -delete 2>/dev/null || true
+        delete_rotated_logs
     fi
     printf ' done\n'
     log_action "quick-clean" "rotated-logs" "$size_rotated"
@@ -1058,10 +1078,8 @@ menu_logs_cleanup() {
 clean_rotated_logs() {
     record_disk_start
     echo ""
-    local size
-    size=$(get_find_size_bytes /var/log -name '*.gz' -o -name '*.old' -o -name '*.1' \
-        -o -name '*.2' -o -name '*.3' -o -name '*.4' -o -name '*.5' \
-        -o -name '*.6' -o -name '*.7' -o -name '*.8' -o -name '*.9')
+    local size size_after removed
+    size=$(get_rotated_logs_size)
     printf '  Rotated logs size: %s\n' "$(format_size "$size")"
 
     if [[ "$size" -eq 0 ]]; then
@@ -1073,17 +1091,18 @@ clean_rotated_logs() {
     if ! confirm "Delete rotated logs?"; then pause; return; fi
 
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        find /var/log -type f \( -name '*.gz' -o -name '*.old' -o -name '*.1' \
-            -o -name '*.2' -o -name '*.3' -o -name '*.4' -o -name '*.5' \
-            -o -name '*.6' -o -name '*.7' -o -name '*.8' -o -name '*.9' \) \
-            -delete 2>/dev/null || true
+        delete_rotated_logs
     fi
+
+    size_after=$(get_rotated_logs_size)
+    removed=$(( size - size_after ))
+    (( removed < 0 )) && removed=0
 
     local freed
     freed=$(calc_freed_since_start)
-    print_success "Removed log data (estimate): $(format_size "$size")"
+    print_success "Removed rotated logs: $(format_size "$removed")"
     print_success "Freed on filesystem: $(format_size "$freed")"
-    if (( size > 0 && freed == 0 )); then
+    if (( removed > 0 && freed == 0 )); then
         print_warning "Filesystem free space may update later (open files, reserved blocks, or delayed reclaim)."
     fi
     log_action "logs" "rotated-clean" "$freed"
@@ -1254,9 +1273,9 @@ clean_app_logs() {
 
 clean_all_logs() {
     echo ""
-    print_error "⚠️  WARNING: This will clean ALL logs from /var/log!"
-    print_error "This includes system logs, auth logs, and application logs."
-    print_error "This is IRREVERSIBLE and may hinder troubleshooting."
+    print_warning "WARNING: This will clean ALL logs from /var/log!"
+    print_warning "This includes system logs, auth logs, and application logs."
+    print_warning "This is IRREVERSIBLE and may hinder troubleshooting."
     echo ""
     printf '  Type "CONFIRM" to proceed: ' > /dev/tty
     local reply=""
@@ -1273,22 +1292,32 @@ clean_all_logs() {
     fi
 
     record_disk_start
+    local varlog_before varlog_after removed_varlog
+    varlog_before=$(get_size_bytes /var/log)
 
     if [[ "$DRY_RUN" -eq 0 ]]; then
         # Delete all rotated/archived logs
-        find /var/log -type f \( -name '*.gz' -o -name '*.old' -o -name '*.[0-9]' \) \
-            -delete 2>/dev/null || true
-        # Truncate all remaining log files
-        find /var/log -type f -name '*.log' -exec truncate -s 0 {} \; 2>/dev/null || true
+        delete_rotated_logs
+        # Truncate all remaining log files, except binary login accounting files.
+        find /var/log -type f ! -name 'wtmp' ! -name 'btmp' ! -name 'lastlog' \
+            -exec truncate -s 0 {} \; 2>/dev/null || true
         # Clean journal if available
         if command -v journalctl &>/dev/null; then
             journalctl --vacuum-size=1M 2>/dev/null || true
         fi
     fi
 
+    varlog_after=$(get_size_bytes /var/log)
+    removed_varlog=$(( varlog_before - varlog_after ))
+    (( removed_varlog < 0 )) && removed_varlog=0
+
     local freed
     freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_success "Removed from /var/log: $(format_size "$removed_varlog")"
+    print_success "Freed on filesystem: $(format_size "$freed")"
+    if (( removed_varlog > 0 && freed == 0 )); then
+        print_warning "Filesystem free space may update later (open files, reserved blocks, or delayed reclaim)."
+    fi
     log_action "logs" "all-logs-clean" "$freed"
     pause
 }
@@ -1973,7 +2002,7 @@ full_deep_clean() {
     # Comprehensive estimate
     local est_logs est_pkg est_tmp est_thumb est_trash est_crash est_docker est_total
 
-    est_logs=$(get_find_size_bytes /var/log -name '*.gz' -o -name '*.old' -o -name '*.1' -o -name '*.2' -o -name '*.3')
+    est_logs=$(get_rotated_logs_size)
     est_pkg=$(estimate_pkg_cache_size)
     est_tmp=$(get_find_size_bytes /tmp -mtime +"$TEMP_FILE_AGE_DAYS")
     est_tmp=$(( est_tmp + $(get_find_size_bytes /var/tmp -mtime +"$TEMP_FILE_AGE_DAYS") ))
