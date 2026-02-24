@@ -334,6 +334,20 @@ print_dry_run_prefix() {
     fi
 }
 
+print_cleanup_result() {
+    local removed="${1:-0}" freed="${2:-0}"
+    (( removed < 0 )) && removed=0
+    (( freed < 0 )) && freed=0
+
+    if (( removed > 0 )); then
+        print_success "Removed data: $(format_size "$removed")"
+    fi
+    print_success "Freed on filesystem: $(format_size "$freed")"
+    if (( removed > 0 && freed == 0 )); then
+        print_warning "Filesystem free space may update later (open files, reserved blocks, or delayed reclaim)."
+    fi
+}
+
 # Draw a colored usage bar
 # Usage: draw_bar <percent> <width>
 draw_bar() {
@@ -400,6 +414,14 @@ get_disk_summary_line() {
 
 # Prompt user: returns 0 if user said yes
 # Always reads from /dev/tty so stdin piping never interferes
+is_confirm_yes() {
+    local reply="${1:-}"
+    case "${reply,,}" in
+        y|yes|д|да) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 confirm() {
     local prompt="${1:-Continue?}"
     local default="${2:-y}"
@@ -419,10 +441,7 @@ confirm() {
 
     reply="$(echo "$reply" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     reply="${reply:-$default}"
-    case "${reply,,}" in
-        y|yes|д|да) return 0 ;;
-        *) return 1 ;;
-    esac
+    is_confirm_yes "$reply"
 }
 
 # Read numeric choice
@@ -1559,20 +1578,23 @@ menu_cache_cleanup() {
 clean_pkg_cache_interactive() {
     record_disk_start
     echo ""
-    local size
+    local size size_after removed
     size="$(estimate_pkg_cache_size)"
     printf '  Package cache size: %s\n' "$(format_size "$size")"
     if ! confirm "Clean package cache?"; then return; fi
     if [[ "$DRY_RUN" -eq 0 ]]; then clean_pkg_cache_silent; fi
+    size_after="$(estimate_pkg_cache_size)"
+    removed=$(( size - size_after ))
+    (( removed < 0 )) && removed=0
     local freed; freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_cleanup_result "$removed" "$freed"
     log_action "cache" "pkg-cache" "$freed"
 }
 
 clean_pip_cache() {
     record_disk_start
     echo ""
-    local total=0
+    local total=0 total_after=0 removed=0
     for d in /root/.cache/pip /home/*/.cache/pip; do
         [[ -d "$d" ]] && total=$(( total + $(get_size_bytes "$d") ))
     done
@@ -1584,15 +1606,20 @@ clean_pip_cache() {
             [[ -d "$d" ]] && safe_rm_cache_dir "$d"
         done
     fi
+    for d in /root/.cache/pip /home/*/.cache/pip; do
+        [[ -d "$d" ]] && total_after=$(( total_after + $(get_size_bytes "$d") ))
+    done
+    removed=$(( total - total_after ))
+    (( removed < 0 )) && removed=0
     local freed; freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_cleanup_result "$removed" "$freed"
     log_action "cache" "pip-cache" "$freed"
 }
 
 clean_npm_cache() {
     record_disk_start
     echo ""
-    local total=0
+    local total=0 total_after=0 removed=0
     for d in /root/.npm /home/*/.npm; do
         [[ -d "$d" ]] && total=$(( total + $(get_size_bytes "$d") ))
     done
@@ -1604,15 +1631,20 @@ clean_npm_cache() {
             [[ -d "$d" ]] && safe_rm_cache_dir "$d"
         done
     fi
+    for d in /root/.npm /home/*/.npm; do
+        [[ -d "$d" ]] && total_after=$(( total_after + $(get_size_bytes "$d") ))
+    done
+    removed=$(( total - total_after ))
+    (( removed < 0 )) && removed=0
     local freed; freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_cleanup_result "$removed" "$freed"
     log_action "cache" "npm-cache" "$freed"
 }
 
 clean_composer_cache() {
     record_disk_start
     echo ""
-    local total=0
+    local total=0 total_after=0 removed=0
     for d in /root/.composer/cache /home/*/.composer/cache /root/.cache/composer /home/*/.cache/composer; do
         [[ -d "$d" ]] && total=$(( total + $(get_size_bytes "$d") ))
     done
@@ -1624,15 +1656,20 @@ clean_composer_cache() {
             [[ -d "$d" ]] && safe_rm_cache_dir "$d"
         done
     fi
+    for d in /root/.composer/cache /home/*/.composer/cache /root/.cache/composer /home/*/.cache/composer; do
+        [[ -d "$d" ]] && total_after=$(( total_after + $(get_size_bytes "$d") ))
+    done
+    removed=$(( total - total_after ))
+    (( removed < 0 )) && removed=0
     local freed; freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_cleanup_result "$removed" "$freed"
     log_action "cache" "composer-cache" "$freed"
 }
 
 clean_tmp() {
     record_disk_start
     echo ""
-    local size
+    local size size_after removed
     size=$(get_find_size_bytes /tmp -mtime +"$TEMP_FILE_AGE_DAYS")
     printf '  /tmp files older than %d days: %s\n' "$TEMP_FILE_AGE_DAYS" "$(format_size "$size")"
     if [[ "$size" -eq 0 ]]; then print_info "Nothing to clean."; return; fi
@@ -1640,15 +1677,18 @@ clean_tmp() {
     if [[ "$DRY_RUN" -eq 0 ]]; then
         find /tmp -mindepth 1 -mtime +"$TEMP_FILE_AGE_DAYS" -delete 2>/dev/null || true
     fi
+    size_after=$(get_find_size_bytes /tmp -mtime +"$TEMP_FILE_AGE_DAYS")
+    removed=$(( size - size_after ))
+    (( removed < 0 )) && removed=0
     local freed; freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_cleanup_result "$removed" "$freed"
     log_action "cache" "tmp-clean" "$freed"
 }
 
 clean_var_tmp() {
     record_disk_start
     echo ""
-    local size
+    local size size_after removed
     size=$(get_find_size_bytes /var/tmp -mtime +"$TEMP_FILE_AGE_DAYS")
     printf '  /var/tmp files older than %d days: %s\n' "$TEMP_FILE_AGE_DAYS" "$(format_size "$size")"
     if [[ "$size" -eq 0 ]]; then print_info "Nothing to clean."; return; fi
@@ -1656,15 +1696,18 @@ clean_var_tmp() {
     if [[ "$DRY_RUN" -eq 0 ]]; then
         find /var/tmp -mindepth 1 -mtime +"$TEMP_FILE_AGE_DAYS" -delete 2>/dev/null || true
     fi
+    size_after=$(get_find_size_bytes /var/tmp -mtime +"$TEMP_FILE_AGE_DAYS")
+    removed=$(( size - size_after ))
+    (( removed < 0 )) && removed=0
     local freed; freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_cleanup_result "$removed" "$freed"
     log_action "cache" "var-tmp-clean" "$freed"
 }
 
 clean_font_man_cache() {
     record_disk_start
     echo ""
-    local total=0
+    local total=0 total_after=0 removed=0
     [[ -d /var/cache/fontconfig ]] && total=$(( total + $(get_size_bytes /var/cache/fontconfig) ))
     [[ -d /var/cache/man ]]        && total=$(( total + $(get_size_bytes /var/cache/man) ))
     printf '  Font/man cache size: %s\n' "$(format_size "$total")"
@@ -1674,8 +1717,12 @@ clean_font_man_cache() {
         [[ -d /var/cache/fontconfig ]] && safe_rm_dir_contents /var/cache/fontconfig
         [[ -d /var/cache/man ]]        && safe_rm_dir_contents /var/cache/man
     fi
+    [[ -d /var/cache/fontconfig ]] && total_after=$(( total_after + $(get_size_bytes /var/cache/fontconfig) ))
+    [[ -d /var/cache/man ]]        && total_after=$(( total_after + $(get_size_bytes /var/cache/man) ))
+    removed=$(( total - total_after ))
+    (( removed < 0 )) && removed=0
     local freed; freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_cleanup_result "$removed" "$freed"
     log_action "cache" "font-man-cache" "$freed"
 }
 

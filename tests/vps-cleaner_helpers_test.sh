@@ -116,6 +116,13 @@ test_clean_all_logs_confirmation_keyword() {
     assert_contains "$script_content" '[[ "$reply" != "CONFIRM" ]]' "clean_all_logs validates CONFIRM"
 }
 
+test_is_confirm_yes() {
+    assert_success "accepts uppercase Y" is_confirm_yes "Y"
+    assert_success "accepts lowercase yes" is_confirm_yes "yes"
+    assert_success "accepts russian yes" is_confirm_yes "Да"
+    assert_failure "rejects no" is_confirm_yes "n"
+}
+
 main() {
     test_truncate_for_table
     test_format_size
@@ -125,6 +132,7 @@ main() {
     test_get_find_size_bytes
     test_print_menu_contains_uninstall_option
     test_clean_all_logs_confirmation_keyword
+    test_is_confirm_yes
     printf 'PASS: vps-cleaner helper tests\n'
 }
 
