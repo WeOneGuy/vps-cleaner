@@ -370,17 +370,25 @@ get_disk_summary_line() {
 }
 
 # Prompt user: returns 0 if user said yes
+# Always reads from /dev/tty so stdin piping never interferes
 confirm() {
     local prompt="${1:-Continue?}"
     local default="${2:-n}"
-    local reply
+    local reply=""
 
     if [[ "$default" == "y" ]]; then
-        printf '  %s [Y/n]: ' "$prompt"
+        printf '  %s [Y/n]: ' "$prompt" > /dev/tty
     else
-        printf '  %s [y/N]: ' "$prompt"
+        printf '  %s [y/N]: ' "$prompt" > /dev/tty
     fi
-    read -r reply
+
+    if [[ -r /dev/tty ]]; then
+        IFS= read -r reply < /dev/tty || reply=""
+    else
+        IFS= read -r reply || reply=""
+    fi
+
+    reply="$(echo "$reply" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     reply="${reply:-$default}"
     [[ "${reply,,}" == "y" || "${reply,,}" == "yes" ]]
 }
@@ -412,8 +420,12 @@ read_choice() {
 
 # Press enter to continue
 pause() {
-    printf '\n  %sPress Enter to continue...%s' "$DIM" "$RESET"
-    read -r
+    printf '\n  %sPress Enter to continue...%s' "$DIM" "$RESET" > /dev/tty
+    if [[ -r /dev/tty ]]; then
+        IFS= read -r < /dev/tty || true
+    else
+        IFS= read -r || true
+    fi
 }
 
 # ============================================================================
@@ -586,15 +598,18 @@ offer_install_optional_deps() {
         for dep in "${MISSING_OPTIONAL_DEPS[@]}"; do
             [[ "$dep" == "curl or wget" ]] && dep="curl"
             [[ "$dep" == "tput" ]] && dep="ncurses-bin" # Common provider
+            printf '  Installing %s...\n' "$dep"
             case "$PKG_MANAGER" in
-                apt)    apt-get install -y "$dep" 2>/dev/null ;;
-                dnf)    dnf install -y "$dep" 2>/dev/null ;;
-                yum)    yum install -y "$dep" 2>/dev/null ;;
-                pacman) pacman -S --noconfirm "$dep" 2>/dev/null ;;
-                apk)    apk add "$dep" 2>/dev/null ;;
-                zypper) zypper install -y "$dep" 2>/dev/null ;;
+                apt)    DEBIAN_FRONTEND=noninteractive apt-get install -y "$dep" || print_warning "Failed to install $dep" ;;
+                dnf)    dnf install -y "$dep" || print_warning "Failed to install $dep" ;;
+                yum)    yum install -y "$dep" || print_warning "Failed to install $dep" ;;
+                pacman) pacman -S --noconfirm "$dep" || print_warning "Failed to install $dep" ;;
+                apk)    apk add "$dep" || print_warning "Failed to install $dep" ;;
+                zypper) zypper install -y "$dep" || print_warning "Failed to install $dep" ;;
             esac
         done
+        # Restore terminal state in case package manager changed it
+        stty sane 2>/dev/null || true
         # Re-check after install attempt
         check_dependencies
     fi
@@ -1155,9 +1170,13 @@ clean_all_logs() {
     print_error "This includes system logs, auth logs, and application logs."
     print_error "This is IRREVERSIBLE and may hinder troubleshooting."
     echo ""
-    printf '  Type "YES I UNDERSTAND" to proceed: '
-    local reply
-    read -r reply
+    printf '  Type "YES I UNDERSTAND" to proceed: ' > /dev/tty
+    local reply=""
+    if [[ -r /dev/tty ]]; then
+        IFS= read -r reply < /dev/tty || reply=""
+    else
+        IFS= read -r reply || reply=""
+    fi
 
     if [[ "$reply" != "YES I UNDERSTAND" ]]; then
         print_info "Cancelled."
