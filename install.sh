@@ -107,9 +107,20 @@ printf "\n${GREEN}━━━ Installation Complete ━━━${NC}\n"
 printf "  Run:       ${CYAN}vps-cleaner${NC}\n"
 printf "  Uninstall: ${CYAN}curl -fsSL %s/install.sh | bash -s -- --uninstall${NC}\n\n" "$REPO_URL"
 
-# Offer to run
-printf "${YELLOW}Run VPS Cleaner now? [y/N]${NC} "
-read -r -t 10 answer || answer=""
-if [[ "$answer" =~ ^[Yy]$ ]]; then
-    exec vps-cleaner
+# Offer to run only in interactive TTY
+if [[ -t 0 && -t 1 ]] && [[ -r /dev/tty ]] && [[ -w /dev/tty ]]; then
+    printf "${YELLOW}Run VPS Cleaner now? [y/N]${NC} " > /dev/tty
+    answer=""
+    if IFS= read -r -t 10 answer < /dev/tty; then
+        answer="$(echo "$answer" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    else
+        answer=""
+    fi
+
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        exec vps-cleaner
+    fi
+else
+    info "Non-interactive install detected. Skipping auto-run."
+    info "Run manually: vps-cleaner"
 fi
