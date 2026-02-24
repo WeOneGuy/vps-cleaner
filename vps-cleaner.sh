@@ -424,14 +424,10 @@ is_confirm_yes() {
 
 confirm() {
     local prompt="${1:-Continue?}"
-    local default="${2:-y}"
+    local default="y"
     local reply=""
 
-    if [[ "$default" == "y" ]]; then
-        printf '  %s [Y/n]: ' "$prompt" > /dev/tty
-    else
-        printf '  %s [y/N]: ' "$prompt" > /dev/tty
-    fi
+    printf '  %s [Y/n]: ' "$prompt" > /dev/tty
 
     if [[ -r /dev/tty ]]; then
         IFS= read -r reply < /dev/tty || reply=""
@@ -442,6 +438,16 @@ confirm() {
     reply="$(echo "$reply" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     reply="${reply:-$default}"
     is_confirm_yes "$reply"
+}
+
+extract_reclaimed_bytes() {
+    local raw_output="${1:-}" reclaimed_raw=""
+    reclaimed_raw="$(echo "$raw_output" | sed -n 's/.*Total reclaimed space:[[:space:]]*\([^[:space:]]\+\).*/\1/p' | tail -1)"
+    if [[ -z "$reclaimed_raw" ]]; then
+        echo 0
+        return
+    fi
+    parse_size_to_bytes "$reclaimed_raw"
 }
 
 # Read numeric choice
@@ -1775,6 +1781,7 @@ menu_docker_cleanup() {
 docker_rm_stopped() {
     record_disk_start
     echo ""
+    local output="" removed=0
     local containers
     containers="$(docker ps -a --filter status=exited -q 2>/dev/null)"
     if [[ -z "$containers" ]]; then
@@ -1787,9 +1794,11 @@ docker_rm_stopped() {
     echo ""
     if ! confirm "Remove stopped containers?"; then pause; return; fi
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        docker container prune -f 2>/dev/null || true
+        output="$(docker container prune -f 2>/dev/null || true)"
+        removed="$(extract_reclaimed_bytes "$output")"
     fi
     local freed; freed=$(calc_freed_since_start)
+    (( removed > freed )) && freed="$removed"
     print_success "Freed: $(format_size "$freed")"
     log_action "docker" "rm-stopped" "$freed"
     pause
@@ -1798,11 +1807,14 @@ docker_rm_stopped() {
 docker_rm_images() {
     record_disk_start
     echo ""
+    local output="" removed=0
     if ! confirm "Remove all unused Docker images?"; then pause; return; fi
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        docker image prune -a -f 2>/dev/null || true
+        output="$(docker image prune -a -f 2>/dev/null || true)"
+        removed="$(extract_reclaimed_bytes "$output")"
     fi
     local freed; freed=$(calc_freed_since_start)
+    (( removed > freed )) && freed="$removed"
     print_success "Freed: $(format_size "$freed")"
     log_action "docker" "rm-images" "$freed"
     pause
@@ -1811,12 +1823,15 @@ docker_rm_images() {
 docker_rm_volumes() {
     record_disk_start
     echo ""
+    local output="" removed=0
     print_warning "Removing unused volumes will permanently destroy any data in them!"
     if ! confirm "Remove unused Docker volumes?"; then pause; return; fi
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        docker volume prune -f 2>/dev/null || true
+        output="$(docker volume prune -f 2>/dev/null || true)"
+        removed="$(extract_reclaimed_bytes "$output")"
     fi
     local freed; freed=$(calc_freed_since_start)
+    (( removed > freed )) && freed="$removed"
     print_success "Freed: $(format_size "$freed")"
     log_action "docker" "rm-volumes" "$freed"
     pause
@@ -1825,11 +1840,14 @@ docker_rm_volumes() {
 docker_rm_buildcache() {
     record_disk_start
     echo ""
+    local output="" removed=0
     if ! confirm "Remove Docker build cache?"; then pause; return; fi
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        docker builder prune -a -f 2>/dev/null || true
+        output="$(docker builder prune -a -f 2>/dev/null || true)"
+        removed="$(extract_reclaimed_bytes "$output")"
     fi
     local freed; freed=$(calc_freed_since_start)
+    (( removed > freed )) && freed="$removed"
     print_success "Freed: $(format_size "$freed")"
     log_action "docker" "rm-buildcache" "$freed"
     pause
@@ -1838,12 +1856,15 @@ docker_rm_buildcache() {
 docker_system_prune() {
     record_disk_start
     echo ""
+    local output="" removed=0
     print_warning "This will remove ALL unused containers, images, networks, and optionally volumes."
     if ! confirm "Run docker system prune --all --volumes?"; then pause; return; fi
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        docker system prune -a --volumes -f 2>/dev/null || true
+        output="$(docker system prune -a --volumes -f 2>/dev/null || true)"
+        removed="$(extract_reclaimed_bytes "$output")"
     fi
     local freed; freed=$(calc_freed_since_start)
+    (( removed > freed )) && freed="$removed"
     print_success "Freed: $(format_size "$freed")"
     log_action "docker" "system-prune" "$freed"
     pause
@@ -1852,18 +1873,10 @@ docker_system_prune() {
 docker_clean_logs() {
     record_disk_start
     echo ""
-    local total=0
+    local total=0 total_after=0 removed=0
     local log_dir="/var/lib/docker/containers"
 
-    if [[ -d "$log_dir" ]]; then
-        if [[ "$HAS_DU_BYTES" -eq 1 ]]; then
-            total=$(find "$log_dir" -name '*-json.log' -type f 2>/dev/null \
-                | xargs du -sb 2>/dev/null | awk '{s+=$1} END {printf "%d", s}') || total=0
-        else
-            total=$(find "$log_dir" -name '*-json.log' -type f 2>/dev/null \
-                | xargs du -sk 2>/dev/null | awk '{s+=$1*1024} END {printf "%d", s}') || total=0
-        fi
-    fi
+    total=$(get_find_size_bytes "$log_dir" -name '*-json.log')
 
     printf '  Docker container log size: %s\n' "$(format_size "$total")"
     if [[ "$total" -eq 0 ]]; then print_info "Nothing to clean."; pause; return; fi
@@ -1873,7 +1886,12 @@ docker_clean_logs() {
         find "$log_dir" -name '*-json.log' -type f -exec truncate -s 0 {} \; 2>/dev/null || true
     fi
 
+    total_after=$(get_find_size_bytes "$log_dir" -name '*-json.log')
+    removed=$(( total - total_after ))
+    (( removed < 0 )) && removed=0
+
     local freed; freed=$(calc_freed_since_start)
+    (( removed > freed )) && freed="$removed"
     print_success "Freed: $(format_size "$freed")"
     log_action "docker" "clean-logs" "$freed"
     pause

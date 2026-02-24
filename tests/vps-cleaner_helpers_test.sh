@@ -123,6 +123,16 @@ test_is_confirm_yes() {
     assert_failure "rejects no" is_confirm_yes "n"
 }
 
+test_extract_reclaimed_bytes() {
+    local parsed
+    parsed="$(extract_reclaimed_bytes $'Deleted: 3\\nTotal reclaimed space: 2.017GB')"
+    if [[ "$parsed" -lt 2000000000 ]]; then
+        printf 'FAIL: extract_reclaimed_bytes should parse reclaimed size\n' >&2
+        exit 1
+    fi
+    assert_eq "$(extract_reclaimed_bytes "nothing here")" "0" "returns 0 when reclaimed line is missing"
+}
+
 main() {
     test_truncate_for_table
     test_format_size
@@ -133,6 +143,7 @@ main() {
     test_print_menu_contains_uninstall_option
     test_clean_all_logs_confirmation_keyword
     test_is_confirm_yes
+    test_extract_reclaimed_bytes
     printf 'PASS: vps-cleaner helper tests\n'
 }
 
