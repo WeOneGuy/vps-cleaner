@@ -420,11 +420,50 @@ read_choice() {
 
 # Press enter to continue
 pause() {
-    printf '\n  %sPress Enter to continue...%s' "$DIM" "$RESET" > /dev/tty
+    if [[ -w /dev/tty ]]; then
+        printf '\n  %sPress Enter to continue...%s' "$DIM" "$RESET" > /dev/tty
+    else
+        printf '\n  %sPress Enter to continue...%s' "$DIM" "$RESET" >&2
+    fi
+
     if [[ -r /dev/tty ]]; then
         IFS= read -r < /dev/tty || true
     else
         IFS= read -r || true
+    fi
+}
+
+truncate_for_table() {
+    local text="${1:-}" width="${2:-20}"
+    if (( width <= 0 )); then
+        return
+    fi
+    if (( ${#text} <= width )); then
+        printf '%s' "$text"
+        return
+    fi
+    if (( width <= 3 )); then
+        printf '%s' "${text:0:width}"
+        return
+    fi
+    printf '%s...' "${text:0:width-3}"
+}
+
+should_skip_mountpoint() {
+    local mount_point="${1:-}"
+    [[ "$mount_point" == /var/lib/docker/rootfs/overlayfs/* ]] && return 0
+    [[ "$mount_point" == /var/lib/docker/overlay2/* ]] && return 0
+    return 1
+}
+
+run_timed_pipeline() {
+    local timeout_sec="${1:-20}"
+    shift
+
+    if command -v timeout &>/dev/null; then
+        timeout --foreground "$timeout_sec" bash -o pipefail -c "$*"
+    else
+        bash -o pipefail -c "$*"
     fi
 }
 
@@ -730,16 +769,17 @@ show_disk_overview() {
     while IFS= read -r line; do
         local mp sz used avail pct pct_num
         mp="$(echo "$line"   | awk '{print $6}')"
+        should_skip_mountpoint "$mp" && continue
         sz="$(echo "$line"   | awk '{print $2}')"
         used="$(echo "$line" | awk '{print $3}')"
         avail="$(echo "$line"| awk '{print $4}')"
         pct="$(echo "$line"  | awk '{print $5}')"
         pct_num="${pct/\%/}"
 
-        printf '  %-20s %8s %8s %8s %5s  ' "$mp" "$sz" "$used" "$avail" "$pct"
+        printf '  %-20s %8s %8s %8s %5s  ' "$(truncate_for_table "$mp" 20)" "$sz" "$used" "$avail" "$pct"
         draw_bar "$pct_num" 20
         printf '\n'
-    done < <(df -h -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {print}')
+    done < <(df -P -h -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {print}')
 
     # Inode usage
     echo ""
@@ -751,42 +791,44 @@ show_disk_overview() {
     while IFS= read -r line; do
         local mp total used free pct
         mp="$(echo "$line"    | awk '{print $6}')"
+        should_skip_mountpoint "$mp" && continue
         total="$(echo "$line" | awk '{print $2}')"
         used="$(echo "$line"  | awk '{print $3}')"
         free="$(echo "$line"  | awk '{print $4}')"
         pct="$(echo "$line"   | awk '{print $5}')"
 
-        printf '  %-20s %10s %10s %10s %5s\n' "$mp" "$total" "$used" "$free" "$pct"
-    done < <(df -i -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {print}')
+        printf '  %-20s %10s %10s %10s %5s\n' "$(truncate_for_table "$mp" 20)" "$total" "$used" "$free" "$pct"
+    done < <(df -P -i -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {print}')
 
     # Top 15 directories
     echo ""
     printf '  %s%sTop 15 Largest Directories (under /):%s\n' "$BOLD" "$WHITE" "$RESET"
     print_separator
 
-    local excl_args=""
-    for fs in $EXCLUDED_FS; do
-        excl_args="$excl_args --exclude=$fs"
-    done
-
-    # shellcheck disable=SC2086
-    du -hx -d 2 / $excl_args 2>/dev/null \
-        | sort -rh | head -15 \
-        | while IFS= read -r dline; do
+    local top_dirs_output
+    if top_dirs_output="$(run_timed_pipeline 20 "du -xh -d 2 / --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/snap --exclude=/var/lib/docker/rootfs/overlayfs --exclude=/var/lib/docker/overlay2 2>/dev/null | sort -rh | head -15")"; then
+        while IFS= read -r dline; do
+            [[ -z "$dline" ]] && continue
             printf '  %s\n' "$dline"
-          done
+        done <<< "$top_dirs_output"
+    else
+        print_warning "Directory scan timed out. Showing partial or no data."
+    fi
 
     # Top 10 files
     echo ""
     printf '  %s%sTop 10 Largest Files:%s\n' "$BOLD" "$WHITE" "$RESET"
     print_separator
 
-    find / -xdev -type f -not -path '/proc/*' -not -path '/sys/*' -not -path '/dev/*' \
-        -exec stat -c '%s %n' {} + 2>/dev/null \
-        | sort -rn | head -10 \
-        | while IFS=' ' read -r size fpath; do
+    local top_files_output
+    if top_files_output="$(run_timed_pipeline 20 "find /var /usr /home /root /opt /srv /tmp -xdev -type f -not -path '/var/lib/docker/rootfs/overlayfs/*' -not -path '/var/lib/docker/overlay2/*' -exec stat -c '%s %n' {} + 2>/dev/null | sort -rn | head -10")"; then
+        while IFS=' ' read -r size fpath; do
+            [[ -z "${size:-}" || -z "${fpath:-}" ]] && continue
             printf '  %10s  %s\n' "$(format_size "$size")" "$fpath"
-          done
+        done <<< "$top_files_output"
+    else
+        print_warning "Large file scan timed out. Showing partial or no data."
+    fi
 
     echo ""
     pause
@@ -2304,4 +2346,6 @@ main() {
     done
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

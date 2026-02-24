@@ -11,9 +11,9 @@ TMP_FILE=""
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 
 info()    { printf "${CYAN}[*]${NC} %s\n" "$1"; }
-success() { printf "${GREEN}[✓]${NC} %s\n" "$1"; }
+success() { printf "${GREEN}[?]${NC} %s\n" "$1"; }
 warn()    { printf "${YELLOW}[!]${NC} %s\n" "$1"; }
-error()   { printf "${RED}[✗]${NC} %s\n" "$1" >&2; }
+error()   { printf "${RED}[?]${NC} %s\n" "$1" >&2; }
 die()     { error "$1"; exit 1; }
 
 cleanup() {
@@ -41,17 +41,6 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     exit 0
 fi
 
-# --- Root check ---
-run_as_root() {
-    if [[ $EUID -eq 0 ]]; then
-        "$@"
-    elif command -v sudo &>/dev/null; then
-        sudo "$@"
-    else
-        die "Root privileges required. Install sudo or run as root."
-    fi
-}
-
 # --- Download tool detection ---
 download() {
     local url="$1" dest="$2"
@@ -66,17 +55,8 @@ download() {
 
 # --- Main ---
 banner
-info "Installing VPS Cleaner..."
+info "Starting VPS Cleaner (ephemeral mode)..."
 
-# Check root/sudo availability
-if [[ $EUID -ne 0 ]]; then
-    if ! command -v sudo &>/dev/null; then
-        die "Root privileges required. Install sudo or run as root."
-    fi
-    warn "Not running as root — will use sudo."
-fi
-
-# Detect download tool
 if command -v curl &>/dev/null; then
     info "Using curl for download."
 elif command -v wget &>/dev/null; then
@@ -85,42 +65,17 @@ else
     die "Neither curl nor wget found. Install one and retry."
 fi
 
-# Download to temp file
 TMP_FILE="$(mktemp /tmp/vps-cleaner.XXXXXX)"
 info "Downloading $SCRIPT_NAME..."
 download "${REPO_URL}/${SCRIPT_NAME}" "$TMP_FILE"
 
-# Validate download
-[[ ! -s "$TMP_FILE" ]] && die "Download failed — file is empty."
-head -c 2 "$TMP_FILE" | grep -q '#!' || die "Download failed — invalid script content."
+[[ ! -s "$TMP_FILE" ]] && die "Download failed - file is empty."
+head -c 2 "$TMP_FILE" | grep -q '#!' || die "Download failed - invalid script content."
+chmod +x "$TMP_FILE"
 success "Download verified."
 
-# Install
-info "Installing to $INSTALL_PATH..."
-run_as_root mv "$TMP_FILE" "$INSTALL_PATH"
-TMP_FILE=""  # prevent cleanup from removing installed file
-run_as_root chmod +x "$INSTALL_PATH"
-success "VPS Cleaner installed to $INSTALL_PATH"
+printf "\n${GREEN}--- One-Time Launch ---${NC}\n"
+printf "  The script will run now and be deleted after exit.\n"
+printf "  Permanent install is optional from menu: ${CYAN}11) Install/Update vps-cleaner${NC}\n\n"
 
-# Usage instructions
-printf "\n${GREEN}━━━ Installation Complete ━━━${NC}\n"
-printf "  Run:       ${CYAN}vps-cleaner${NC}\n"
-printf "  Uninstall: ${CYAN}curl -fsSL %s/install.sh | bash -s -- --uninstall${NC}\n\n" "$REPO_URL"
-
-# Offer to run only in interactive TTY
-if [[ -t 0 && -t 1 ]] && [[ -r /dev/tty ]] && [[ -w /dev/tty ]]; then
-    printf "${YELLOW}Run VPS Cleaner now? [y/N]${NC} " > /dev/tty
-    answer=""
-    if IFS= read -r -t 10 answer < /dev/tty; then
-        answer="$(echo "$answer" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    else
-        answer=""
-    fi
-
-    if [[ "$answer" =~ ^[Yy]$ ]]; then
-        exec vps-cleaner
-    fi
-else
-    info "Non-interactive install detected. Skipping auto-run."
-    info "Run manually: vps-cleaner"
-fi
+exec "$TMP_FILE" "$@"
