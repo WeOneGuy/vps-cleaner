@@ -391,16 +391,23 @@ read_choice() {
     local prompt="${1:-Enter choice}" max="${2:-11}"
     local choice=""
 
-    if [[ -t 0 ]] && [[ -e /dev/tty ]]; then
+    if [[ -r /dev/tty ]] && [[ -w /dev/tty ]]; then
         printf '  %s%s [0-%d]: %s' "$BOLD" "$prompt" "$max" "$RESET" > /dev/tty
-        IFS= read -r choice < /dev/tty || choice=""
+        if ! IFS= read -r choice < /dev/tty; then
+            READ_CHOICE_VALUE=""
+            return 1
+        fi
     else
         printf '  %s%s [0-%d]: %s' "$BOLD" "$prompt" "$max" "$RESET" >&2
-        IFS= read -r choice || choice=""
+        if ! IFS= read -r choice; then
+            READ_CHOICE_VALUE=""
+            return 1
+        fi
     fi
 
     choice="$(echo "$choice" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     READ_CHOICE_VALUE="$choice"
+    return 0
 }
 
 # Press enter to continue
@@ -2243,7 +2250,11 @@ main() {
         print_menu
 
         local choice
-        read_choice "Enter choice" 11
+        if ! read_choice "Enter choice" 11; then
+            echo ""
+            print_error "Input stream is closed. Run script in an interactive terminal."
+            exit 1
+        fi
         choice="$READ_CHOICE_VALUE"
 
         case "$choice" in
@@ -2258,11 +2269,14 @@ main() {
             9)  full_deep_clean ;;
             10) menu_settings ;;
             11) menu_install_update ;;
-            0|"")
+            0)
                 echo ""
                 print_info "Goodbye!"
                 log_action "session" "exit" "0"
                 exit 0
+                ;;
+            "")
+                print_warning "Please enter a menu number (0-11)."
                 ;;
             *)
                 print_error "Invalid choice. Please enter 0-11."
