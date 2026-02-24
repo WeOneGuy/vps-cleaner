@@ -247,7 +247,7 @@ get_rotated_logs_size() {
 }
 
 delete_rotated_logs() {
-    find /var/log -type f \( "${ROTATED_LOG_FIND_ARGS[@]}" \) -delete 2>/dev/null || true
+    find /var/log -type f \( "${ROTATED_LOG_FIND_ARGS[@]}" \) -delete 2>/dev/null
 }
 
 # Record starting disk usage
@@ -979,11 +979,13 @@ show_disk_overview() {
 
 quick_clean() {
     record_disk_start
+    local had_errors=0
     echo ""
     printf '  %s%s🚀 Quick Clean (Safe)%s\n\n' "$BOLD" "$CYAN" "$RESET"
 
     local total_est=0
     local size_rotated size_pkg_cache size_tmp size_thumb size_trash size_crash
+    local had_warnings=0
 
     # Estimate sizes
     size_rotated=$(get_rotated_logs_size)
@@ -1024,7 +1026,10 @@ quick_clean() {
     # 1. Rotated logs
     printf '  Cleaning rotated logs...'
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        delete_rotated_logs
+        if ! delete_rotated_logs; then
+            had_warnings=1
+            print_warning "Rotated logs cleanup encountered errors."
+        fi
     fi
     printf ' done\n'
     log_action "quick-clean" "rotated-logs" "$size_rotated"
@@ -1032,7 +1037,10 @@ quick_clean() {
     # 2. Package cache
     printf '  Cleaning package manager cache...'
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        clean_pkg_cache_silent
+        if ! clean_pkg_cache_silent; then
+            had_warnings=1
+            print_warning "Package cache cleanup encountered errors."
+        fi
     fi
     printf ' done\n'
     log_action "quick-clean" "pkg-cache" "$size_pkg_cache"
@@ -1084,6 +1092,9 @@ quick_clean() {
             print_warning "Filesystem free space may update later (open files, reserved blocks, or delayed reclaim)."
         fi
     fi
+    if (( had_warnings == 1 )); then
+        print_warning "Quick Clean finished with warnings. Some cleanup steps may need a retry."
+    fi
     log_action "quick-clean" "total" "$freed"
 
     pause
@@ -1114,14 +1125,28 @@ estimate_pkg_cache_size() {
 }
 
 clean_pkg_cache_silent() {
+    local status=0
     case "$PKG_MANAGER" in
-        apt)    apt-get clean -y 2>/dev/null || true ;;
-        dnf)    dnf clean all 2>/dev/null || true ;;
-        yum)    yum clean all 2>/dev/null || true ;;
-        pacman) pacman -Scc --noconfirm 2>/dev/null || true ;;
-        apk)    apk cache clean 2>/dev/null || true ;;
-        zypper) zypper clean --all 2>/dev/null || true ;;
+        apt)
+            apt-get clean -y 2>/dev/null || status=1
+            ;;
+        dnf)
+            dnf clean all 2>/dev/null || status=1
+            ;;
+        yum)
+            yum clean all 2>/dev/null || status=1
+            ;;
+        pacman)
+            pacman -Scc --noconfirm 2>/dev/null || status=1
+            ;;
+        apk)
+            apk cache clean 2>/dev/null || status=1
+            ;;
+        zypper)
+            zypper clean --all 2>/dev/null || status=1
+            ;;
     esac
+    return "$status"
 }
 
 # --- Option 3: System Logs Cleanup -----------------------------------------
@@ -1175,7 +1200,9 @@ clean_rotated_logs() {
     if ! confirm "Delete rotated logs?"; then pause; return; fi
 
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        delete_rotated_logs
+        if ! delete_rotated_logs; then
+            print_warning "Some rotated logs could not be removed."
+        fi
     fi
 
     size_after=$(get_rotated_logs_size)
@@ -1392,18 +1419,27 @@ clean_all_logs() {
     fi
 
     record_disk_start
-    local varlog_before varlog_after removed_varlog
+    local varlog_before varlog_after removed_varlog had_errors=0
     varlog_before=$(get_size_bytes /var/log)
 
     if [[ "$DRY_RUN" -eq 0 ]]; then
         # Delete all rotated/archived logs
-        delete_rotated_logs
+        if ! delete_rotated_logs; then
+            had_errors=1
+            print_warning "Failed to remove some rotated log files."
+        fi
         # Truncate all remaining log files, except binary login accounting files.
-        find /var/log -type f ! -name 'wtmp' ! -name 'btmp' ! -name 'lastlog' \
-            -exec truncate -s 0 {} \; 2>/dev/null || true
+        if ! find /var/log -type f ! -name 'wtmp' ! -name 'btmp' ! -name 'lastlog' \
+            -exec truncate -s 0 {} \; 2>/dev/null; then
+            had_errors=1
+            print_warning "Failed to truncate some log files."
+        fi
         # Clean journal if available
         if command -v journalctl &>/dev/null; then
-            journalctl --vacuum-size=1M 2>/dev/null || true
+            if ! journalctl --vacuum-size=1M 2>/dev/null; then
+                had_errors=1
+                print_warning "Failed to vacuum journal logs."
+            fi
         fi
     fi
 
@@ -1417,6 +1453,9 @@ clean_all_logs() {
     print_success "Freed on filesystem: $(format_size "$freed")"
     if (( removed_varlog > 0 && freed == 0 )); then
         print_warning "Filesystem free space may update later (open files, reserved blocks, or delayed reclaim)."
+    fi
+    if (( had_errors == 1 )); then
+        print_warning "All logs cleanup completed with warnings."
     fi
     log_action "logs" "all-logs-clean" "$freed"
     pause
@@ -1650,7 +1689,11 @@ clean_pkg_cache_interactive() {
     size="$(estimate_pkg_cache_size)"
     printf '  Package cache size: %s\n' "$(format_size "$size")"
     if ! confirm "Clean package cache?"; then return; fi
-    if [[ "$DRY_RUN" -eq 0 ]]; then clean_pkg_cache_silent; fi
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+        if ! clean_pkg_cache_silent; then
+            print_warning "Package cache cleanup encountered errors."
+        fi
+    fi
     size_after="$(estimate_pkg_cache_size)"
     removed=$(( size - size_after ))
     (( removed < 0 )) && removed=0
@@ -2186,35 +2229,50 @@ full_deep_clean() {
     # Step 1: Rotated logs
     printf '  %s[1/7]%s Cleaning rotated logs...\n' "$BOLD" "$RESET"
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        find /var/log -type f \( -name '*.gz' -o -name '*.old' -o -name '*.1' -o -name '*.2' \
-            -o -name '*.3' -o -name '*.4' -o -name '*.5' \) -delete 2>/dev/null || true
+        if ! delete_rotated_logs; then
+            had_errors=1
+            print_warning "Failed to remove some rotated logs."
+        fi
     fi
     print_success "Rotated logs cleaned."
 
     # Step 2: Package cache
     printf '  %s[2/7]%s Cleaning package cache...\n' "$BOLD" "$RESET"
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        clean_pkg_cache_silent
+        if ! clean_pkg_cache_silent; then
+            had_errors=1
+            print_warning "Package cache cleanup encountered errors."
+        fi
     fi
     print_success "Package cache cleaned."
 
     # Step 3: Orphaned packages
     printf '  %s[3/7]%s Removing orphaned packages...\n' "$BOLD" "$RESET"
     if [[ "$DRY_RUN" -eq 0 ]]; then
+        local orphan_status=0
         case "$PKG_MANAGER" in
-            apt) apt-get autoremove -y 2>/dev/null || true ;;
-            dnf) dnf autoremove -y 2>/dev/null || true ;;
-            yum) yum autoremove -y 2>/dev/null || true ;;
-            pacman) pacman -Qdtq 2>/dev/null | pacman -Rns --noconfirm - 2>/dev/null || true ;;
+            apt) apt-get autoremove -y 2>/dev/null || orphan_status=1 ;;
+            dnf) dnf autoremove -y 2>/dev/null || orphan_status=1 ;;
+            yum) yum autoremove -y 2>/dev/null || orphan_status=1 ;;
+            pacman) pacman -Qdtq 2>/dev/null | pacman -Rns --noconfirm - 2>/dev/null || orphan_status=1 ;;
         esac
+        if (( orphan_status == 1 )); then
+            had_errors=1
+            print_warning "Orphan package cleanup encountered errors."
+        fi
     fi
     print_success "Orphaned packages removed."
 
     # Step 4: Temp files
     printf '  %s[4/7]%s Cleaning temp files...\n' "$BOLD" "$RESET"
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        find /tmp -mindepth 1 -mtime +"$TEMP_FILE_AGE_DAYS" -delete 2>/dev/null || true
-        find /var/tmp -mindepth 1 -mtime +"$TEMP_FILE_AGE_DAYS" -delete 2>/dev/null || true
+        local temp_status=0
+        find /tmp -mindepth 1 -mtime +"$TEMP_FILE_AGE_DAYS" -delete 2>/dev/null || temp_status=1
+        find /var/tmp -mindepth 1 -mtime +"$TEMP_FILE_AGE_DAYS" -delete 2>/dev/null || temp_status=1
+        if (( temp_status == 1 )); then
+            had_errors=1
+            print_warning "Temporary files cleanup encountered errors."
+        fi
     fi
     print_success "Temp files cleaned."
 
@@ -2234,7 +2292,10 @@ full_deep_clean() {
     # Step 6: Journal logs
     printf '  %s[6/7]%s Cleaning journal logs...\n' "$BOLD" "$RESET"
     if [[ "$DRY_RUN" -eq 0 ]] && command -v journalctl &>/dev/null; then
-        journalctl --vacuum-time="${JOURNAL_RETENTION_DAYS}d" 2>/dev/null || true
+        if ! journalctl --vacuum-time="${JOURNAL_RETENTION_DAYS}d" 2>/dev/null; then
+            had_errors=1
+            print_warning "Journal cleanup encountered errors."
+        fi
     fi
     print_success "Journal logs cleaned."
 
@@ -2243,7 +2304,10 @@ full_deep_clean() {
         printf '  %s[7/7]%s Docker cleanup\n' "$BOLD" "$RESET"
         if confirm "Run Docker system prune?"; then
             if [[ "$DRY_RUN" -eq 0 ]]; then
-                docker system prune -a -f 2>/dev/null || true
+                if ! docker system prune -a -f 2>/dev/null; then
+                    had_errors=1
+                    print_warning "Docker cleanup encountered errors."
+                fi
             fi
             print_success "Docker cleaned."
         else
@@ -2257,7 +2321,11 @@ full_deep_clean() {
     print_separator
     local freed; freed=$(calc_freed_since_start)
     printf '\n'
-    print_success "Full Deep Clean complete! Freed: $(format_size "$freed")"
+    if (( had_errors == 1 )); then
+        print_warning "Full Deep Clean finished with warnings. Freed: $(format_size "$freed")"
+    else
+        print_success "Full Deep Clean complete! Freed: $(format_size "$freed")"
+    fi
     log_action "deep-clean" "full" "$freed"
     pause
 }

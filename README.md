@@ -109,29 +109,23 @@ Settings are stored in `~/.vps-cleaner.conf` and can be edited from the Settings
 ```bash
 # ~/.vps-cleaner.conf
 
-# Journal retention (default: 3d)
-JOURNAL_RETAIN="3d"
+# Dry-run mode (0 = off, 1 = on, default: 0)
+DRY_RUN=0
 
-# Tmp file age threshold in days (default: 7)
-TMP_AGE_DAYS=7
+# Journal retention in days (default: 7)
+JOURNAL_RETENTION_DAYS=7
 
-# Large file size threshold (default: 100M)
-LARGE_FILE_THRESHOLD="100M"
+# Truncate threshold for large logs in MB (default: 50)
+LOG_TRUNCATE_THRESHOLD_MB=50
 
-# Docker: prune all unused images, not just dangling (default: false)
-DOCKER_PRUNE_ALL=false
+# Minimum file size for "Find Large Files" in MB (default: 100)
+LARGE_FILE_MIN_SIZE_MB=100
 
-# Log cleanup: max age in days for rotated logs (default: 7)
-LOG_MAX_AGE_DAYS=7
+# Temp file age threshold in days (default: 7)
+TEMP_FILE_AGE_DAYS=7
 
-# Dry-run mode: show what would be deleted without deleting (default: false)
-DRY_RUN=false
-
-# Old kernel retention count (default: 2)
-KERNEL_KEEP_COUNT=2
-
-# Snap: remove old revisions (default: true)
-SNAP_CLEAN_OLD=true
+# Last update check timestamp (managed automatically)
+LAST_UPDATE_CHECK=0
 ```
 
 ## Supported Distributions
@@ -153,7 +147,7 @@ VPS Cleaner is designed to be safe by default:
 
 - **Protected paths** — Critical system directories and files are never touched. A built-in blocklist prevents accidental deletion of essential paths.
 - **Confirmations** — Destructive operations require explicit confirmation before proceeding.
-- **Dry-run mode** — Enable `DRY_RUN=true` in settings to preview what would be cleaned without actually deleting anything.
+- **Dry-run mode** — Enable `DRY_RUN=1` in settings to preview what would be cleaned without actually deleting anything.
 - **Logging** — All operations are logged for review. Check the output for a summary of what was removed and how much space was freed.
 
 ## Uninstall
@@ -176,3 +170,4 @@ Contributions are welcome! Feel free to open issues and pull requests.
 ## License
 
 [MIT](LICENSE) © 2026
+
