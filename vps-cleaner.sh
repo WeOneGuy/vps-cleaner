@@ -388,10 +388,18 @@ confirm() {
 # Read numeric choice
 read_choice() {
     local prompt="${1:-Enter choice}" max="${2:-11}"
-    local choice
-    printf '  %s%s [0-%d]: %s' "$BOLD" "$prompt" "$max" "$RESET"
-    read -r choice
-    echo "$choice"
+    local choice=""
+
+    if [[ -t 0 ]] && [[ -e /dev/tty ]]; then
+        printf '  %s%s [0-%d]: %s' "$BOLD" "$prompt" "$max" "$RESET" > /dev/tty
+        IFS= read -r choice < /dev/tty || choice=""
+    else
+        printf '  %s%s [0-%d]: %s' "$BOLD" "$prompt" "$max" "$RESET" >&2
+        IFS= read -r choice || choice=""
+    fi
+
+    choice="$(echo "$choice" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    printf '%s\n' "$choice"
 }
 
 # Press enter to continue
