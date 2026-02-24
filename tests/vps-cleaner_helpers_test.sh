@@ -47,6 +47,63 @@ test_truncate_for_table() {
     assert_eq "$(truncate_for_table "abcdef" 3)" "abc" "truncates without ellipsis when width <= 3"
 }
 
+test_get_ui_content_width() {
+    local w_normal w_clamped
+    w_normal="$(
+        COLUMNS=90
+        get_ui_content_width
+    )"
+    w_clamped="$(
+        COLUMNS=40
+        get_ui_content_width
+    )"
+
+    assert_eq "$w_normal" "88" "uses terminal width minus left padding"
+    assert_eq "$w_clamped" "50" "applies minimum content width clamp"
+}
+
+test_truncate_path_for_display() {
+    local short long
+    short="$(truncate_path_for_display "/short/path" 40)"
+    long="$(truncate_path_for_display "/very/long/path/to/really-long-file-name.log" 18)"
+
+    assert_eq "$short" "/short/path" "short paths remain unchanged"
+    assert_contains "$long" "..." "long paths are shortened with ellipsis"
+    if [[ "${#long}" -ne 18 ]]; then
+        printf 'FAIL: truncate_path_for_display should keep requested width\n' >&2
+        exit 1
+    fi
+}
+
+test_print_labeled_size_row() {
+    local row
+    row="$(print_labeled_size_row "Extremely long cleanup label that should be shortened" "123.00 MB" 16 0)"
+    assert_contains "$row" "..." "label rows truncate long labels"
+    assert_contains "$row" "123.00 MB" "label rows keep the right-aligned size"
+}
+
+test_print_separator_width() {
+    local sep sep_default
+    sep="$(
+        DIM="" RESET=""
+        print_separator 24
+    )"
+    if [[ "${#sep}" -ne 26 ]]; then
+        printf 'FAIL: print_separator should respect explicit width\n' >&2
+        exit 1
+    fi
+
+    sep_default="$(
+        COLUMNS=70
+        DIM="" RESET=""
+        print_separator
+    )"
+    if [[ "${#sep_default}" -ne 70 ]]; then
+        printf 'FAIL: print_separator should adapt to terminal width\n' >&2
+        exit 1
+    fi
+}
+
 test_format_size() {
     assert_eq "$(format_size 0)" "0 B" "formats bytes without unit scaling"
     assert_eq "$(format_size 1024)" "1.00 KB" "formats kilobytes with 2 decimals"
@@ -181,6 +238,10 @@ test_truncate_matching_files_and_count_removed() {
 
 main() {
     test_truncate_for_table
+    test_get_ui_content_width
+    test_truncate_path_for_display
+    test_print_labeled_size_row
+    test_print_separator_width
     test_format_size
     test_should_skip_mountpoint
     test_should_skip_filesystem

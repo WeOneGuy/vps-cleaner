@@ -285,19 +285,37 @@ repeat_char() {
     for (( i = 0; i < count; i++ )); do printf '%s' "$ch"; done
 }
 
+get_ui_content_width() {
+    local cols="${COLUMNS:-}"
+    if [[ ! "$cols" =~ ^[0-9]+$ ]] || (( cols <= 0 )); then
+        if command -v tput &>/dev/null; then
+            cols="$(tput cols 2>/dev/null || echo 0)"
+        fi
+    fi
+    if [[ ! "$cols" =~ ^[0-9]+$ ]] || (( cols <= 0 )); then
+        cols=80
+    fi
+
+    local width=$(( cols - 2 ))
+    (( width < 50 )) && width=50
+    (( width > 120 )) && width=120
+    printf '%d' "$width"
+}
+
 print_header() {
     local disk_info
     disk_info="$(get_disk_summary_line)"
     local title="VPS Cleaner v${SCRIPT_VERSION}"
     local distro_line="Distro: ${DISTRO_PRETTY:-Unknown}"
     local disk_line="Disk: ${disk_info}"
-    local rule_len=58
+    local rule_len
+    rule_len="$(get_ui_content_width)"
 
     echo ""
     printf '  %s%s%s\n' "$CYAN" "$(repeat_char '=' "$rule_len")" "$RESET"
-    printf '  %s%s%s%s\n' "$CYAN" "$BOLD" "$title" "$RESET"
-    printf '  %s%s%s\n' "$CYAN" "$distro_line" "$RESET"
-    printf '  %s%s%s\n' "$CYAN" "$disk_line" "$RESET"
+    printf '  %s%s%s%s\n' "$CYAN" "$BOLD" "$(truncate_for_table "$title" "$rule_len")" "$RESET"
+    printf '  %s%s%s\n' "$CYAN" "$(truncate_for_table "$distro_line" "$rule_len")" "$RESET"
+    printf '  %s%s%s\n' "$CYAN" "$(truncate_for_table "$disk_line" "$rule_len")" "$RESET"
     printf '  %s%s%s\n' "$CYAN" "$(repeat_char '=' "$rule_len")" "$RESET"
     echo ""
 }
@@ -325,7 +343,12 @@ print_error()   { printf '  %s❌ %s%s\n' "$RED"    "$*" "$RESET"; }
 print_info()    { printf '  %sℹ️  %s%s\n' "$BLUE"   "$*" "$RESET"; }
 
 print_separator() {
-    printf '  %s%s%s\n' "$DIM" "$(repeat_char '─' 50)" "$RESET"
+    local width="${1:-}"
+    if [[ ! "$width" =~ ^[0-9]+$ ]] || (( width <= 0 )); then
+        width="$(get_ui_content_width)"
+    fi
+    (( width < 20 )) && width=20
+    printf '  %s%s%s\n' "$DIM" "$(repeat_char "$BOX_H" "$width")" "$RESET"
 }
 
 print_dry_run_prefix() {
@@ -518,6 +541,39 @@ truncate_for_table() {
         return
     fi
     printf '%s...' "${text:0:width-3}"
+}
+
+truncate_path_for_display() {
+    local path="${1:-}" width="${2:-40}"
+    if (( width <= 0 )); then
+        return
+    fi
+    if (( ${#path} <= width )); then
+        printf '%s' "$path"
+        return
+    fi
+    if (( width <= 3 )); then
+        printf '%s' "${path:0:width}"
+        return
+    fi
+
+    local tail_keep=$(( (width - 3) / 2 ))
+    local head_keep=$(( width - 3 - tail_keep ))
+    printf '%s...%s' "${path:0:head_keep}" "${path: -tail_keep}"
+}
+
+print_labeled_size_row() {
+    local label="${1:-}"
+    local size_text="${2:-0 B}"
+    local label_width="${3:-35}"
+    local indent="${4:-4}"
+
+    if (( label_width < 8 )); then
+        label_width=8
+    fi
+    local shown_label
+    shown_label="$(truncate_for_table "$label" "$label_width")"
+    printf '%*s%-*s %10s\n' "$indent" "" "$label_width" "$shown_label" "$size_text"
 }
 
 should_skip_mountpoint() {
@@ -893,17 +949,39 @@ truncate_matching_files_and_count_removed() {
 
 show_disk_overview() {
     local choice_before
+    local ui_width mount_col_width bar_width fs_table_width inode_mount_col_width inode_table_width
+    local top_dirs_path_width top_files_path_width
     record_disk_start
+    ui_width="$(get_ui_content_width)"
+
+    bar_width=20
+    mount_col_width=$(( ui_width - bar_width - 46 ))
+    (( mount_col_width > 32 )) && mount_col_width=32
+    (( mount_col_width < 12 )) && mount_col_width=12
+    bar_width=$(( ui_width - mount_col_width - 46 ))
+    (( bar_width > 24 )) && bar_width=24
+    (( bar_width < 8 )) && bar_width=8
+    fs_table_width=$(( mount_col_width + bar_width + 46 ))
+
+    inode_mount_col_width=$(( ui_width - 39 ))
+    (( inode_mount_col_width > 32 )) && inode_mount_col_width=32
+    (( inode_mount_col_width < 12 )) && inode_mount_col_width=12
+    inode_table_width=$(( inode_mount_col_width + 39 ))
+
+    top_dirs_path_width=$(( ui_width - 12 ))
+    (( top_dirs_path_width < 20 )) && top_dirs_path_width=20
+    top_files_path_width=$(( ui_width - 12 ))
+    (( top_files_path_width < 20 )) && top_files_path_width=20
 
     echo ""
     printf '  %s%s📊 Disk Space Overview%s\n\n' "$BOLD" "$CYAN" "$RESET"
 
     # Filesystem usage
     printf '  %s%sFilesystem Usage:%s\n' "$BOLD" "$WHITE" "$RESET"
-    print_separator
+    print_separator "$fs_table_width"
 
-    printf '  %-20s %10s %10s %10s %5s  %s\n' "Mount" "Size" "Used" "Avail" "Use%" "Bar"
-    print_separator
+    printf '  %-*s %10s %10s %10s %5s  %s\n' "$mount_col_width" "Mount" "Size" "Used" "Avail" "Use%" "Bar"
+    print_separator "$fs_table_width"
 
     while IFS= read -r line; do
         local fs mp sz used avail pct pct_num
@@ -917,17 +995,18 @@ show_disk_overview() {
         used_h="$(format_size "$used")"
         avail_h="$(format_size "$avail")"
 
-        printf '  %-20s %10s %10s %10s %5s  ' "$(truncate_for_table "$mp" 20)" "$sz_h" "$used_h" "$avail_h" "$pct"
-        draw_bar "$pct_num" 20
+        printf '  %-*s %10s %10s %10s %5s  ' \
+            "$mount_col_width" "$(truncate_for_table "$mp" "$mount_col_width")" "$sz_h" "$used_h" "$avail_h" "$pct"
+        draw_bar "$pct_num" "$bar_width"
         printf '\n'
     done < <(df -P -B1 -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {print}')
 
     # Inode usage
     echo ""
     printf '  %s%sInode Usage:%s\n' "$BOLD" "$WHITE" "$RESET"
-    print_separator
-    printf '  %-20s %10s %10s %10s %5s\n' "Mount" "Inodes" "Used" "Free" "Use%"
-    print_separator
+    print_separator "$inode_table_width"
+    printf '  %-*s %10s %10s %10s %5s\n' "$inode_mount_col_width" "Mount" "Inodes" "Used" "Free" "Use%"
+    print_separator "$inode_table_width"
 
     while IFS= read -r line; do
         local fs mp total used free pct
@@ -936,7 +1015,8 @@ show_disk_overview() {
         should_skip_filesystem "$fs" && continue
         should_skip_mountpoint "$mp" && continue
 
-        printf '  %-20s %10s %10s %10s %5s\n' "$(truncate_for_table "$mp" 20)" "$total" "$used" "$free" "$pct"
+        printf '  %-*s %10s %10s %10s %5s\n' \
+            "$inode_mount_col_width" "$(truncate_for_table "$mp" "$inode_mount_col_width")" "$total" "$used" "$free" "$pct"
     done < <(df -P -i -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {print}')
 
     # Top 15 directories
@@ -948,8 +1028,15 @@ show_disk_overview() {
     printf '  %s\n' "Scanning directories (can take up to ${DISK_OVERVIEW_SCAN_TIMEOUT_SEC}s)..."
     if top_dirs_output="$(run_timed_pipeline "$DISK_OVERVIEW_SCAN_TIMEOUT_SEC" "du -x -h -d 2 / --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/snap --exclude=/var/lib/docker/rootfs/overlayfs --exclude=/var/lib/docker/overlay2 2>/dev/null | sort -rh | head -15")"; then
         while IFS= read -r dline; do
+            local dsize dpath
             [[ -z "$dline" ]] && continue
-            printf '  %s\n' "$dline"
+            dsize="${dline%%[[:space:]]*}"
+            dpath="$(echo "$dline" | sed 's/^[^[:space:]]*[[:space:]]*//')"
+            if [[ -z "$dpath" || "$dpath" == "$dline" ]]; then
+                printf '  %s\n' "$(truncate_path_for_display "$dline" "$ui_width")"
+            else
+                printf '  %10s  %s\n' "$dsize" "$(truncate_path_for_display "$dpath" "$top_dirs_path_width")"
+            fi
         done <<< "$top_dirs_output"
     else
         print_warning "Directory scan timed out. Showing partial or no data."
@@ -965,7 +1052,7 @@ show_disk_overview() {
     if top_files_output="$(run_timed_pipeline "$DISK_OVERVIEW_SCAN_TIMEOUT_SEC" "find /var /usr /home /root /opt /srv /tmp -xdev -type f -not -path '/var/lib/docker/rootfs/overlayfs/*' -not -path '/var/lib/docker/overlay2/*' -exec stat -c '%s %n' {} + 2>/dev/null | sort -rn | head -10")"; then
         while IFS=' ' read -r size fpath; do
             [[ -z "${size:-}" || -z "${fpath:-}" ]] && continue
-            printf '  %10s  %s\n' "$(format_size "$size")" "$fpath"
+            printf '  %10s  %s\n' "$(format_size "$size")" "$(truncate_path_for_display "$fpath" "$top_files_path_width")"
         done <<< "$top_files_output"
     else
         print_warning "Large file scan timed out. Showing partial or no data."
@@ -979,13 +1066,18 @@ show_disk_overview() {
 
 quick_clean() {
     record_disk_start
-    local had_errors=0
     echo ""
     printf '  %s%s🚀 Quick Clean (Safe)%s\n\n' "$BOLD" "$CYAN" "$RESET"
 
+    local ui_width estimate_label_width estimate_table_width
     local total_est=0
     local size_rotated size_pkg_cache size_tmp size_thumb size_trash size_crash
     local had_warnings=0
+    ui_width="$(get_ui_content_width)"
+    estimate_label_width=$(( ui_width - 15 ))
+    (( estimate_label_width > 48 )) && estimate_label_width=48
+    (( estimate_label_width < 20 )) && estimate_label_width=20
+    estimate_table_width=$(( estimate_label_width + 11 ))
 
     # Estimate sizes
     size_rotated=$(get_rotated_logs_size)
@@ -1005,14 +1097,15 @@ quick_clean() {
     total_est=$(( size_rotated + size_pkg_cache + size_tmp + size_thumb + size_trash + size_crash ))
 
     printf '  %sThe following will be cleaned:%s\n\n' "$BOLD" "$RESET"
-    printf '    %-40s %10s\n' "Rotated logs (.gz, .old, .1-.5)" "$(format_size "$size_rotated")"
-    printf '    %-40s %10s\n' "Package manager cache" "$(format_size "$size_pkg_cache")"
-    printf '    %-40s %10s\n' "Temp files older than ${TEMP_FILE_AGE_DAYS} days" "$(format_size "$size_tmp")"
-    printf '    %-40s %10s\n' "Thumbnail cache" "$(format_size "$size_thumb")"
-    printf '    %-40s %10s\n' "Trash directories" "$(format_size "$size_trash")"
-    printf '    %-40s %10s\n' "Core dumps (/var/crash)" "$(format_size "$size_crash")"
-    print_separator
-    printf '    %-40s %s%10s%s\n' "Estimated total savings" "$BOLD" "$(format_size "$total_est")" "$RESET"
+    print_labeled_size_row "Rotated logs (.gz, .old, .1-.5)" "$(format_size "$size_rotated")" "$estimate_label_width"
+    print_labeled_size_row "Package manager cache" "$(format_size "$size_pkg_cache")" "$estimate_label_width"
+    print_labeled_size_row "Temp files older than ${TEMP_FILE_AGE_DAYS} days" "$(format_size "$size_tmp")" "$estimate_label_width"
+    print_labeled_size_row "Thumbnail cache" "$(format_size "$size_thumb")" "$estimate_label_width"
+    print_labeled_size_row "Trash directories" "$(format_size "$size_trash")" "$estimate_label_width"
+    print_labeled_size_row "Core dumps (/var/crash)" "$(format_size "$size_crash")" "$estimate_label_width"
+    print_separator "$estimate_table_width"
+    printf '    %-*s %s%10s%s\n' "$estimate_label_width" \
+        "$(truncate_for_table "Estimated total savings" "$estimate_label_width")" "$BOLD" "$(format_size "$total_est")" "$RESET"
     echo ""
 
     if ! confirm "Proceed with Quick Clean?"; then
@@ -1224,6 +1317,10 @@ truncate_large_logs() {
     record_disk_start
     echo ""
     local found=0 removed=0
+    local ui_width log_path_width
+    ui_width="$(get_ui_content_width)"
+    log_path_width=$(( ui_width - 12 ))
+    (( log_path_width < 20 )) && log_path_width=20
 
     printf '  Large log files (> %dMB):\n' "$LOG_TRUNCATE_THRESHOLD_MB"
     print_separator
@@ -1232,7 +1329,7 @@ truncate_large_logs() {
         local fsize fpath
         fsize="$(echo "$line" | awk '{print $1}')"
         fpath="$(echo "$line" | awk '{print $2}')"
-        printf '  %10s  %s\n' "$(format_size "$fsize")" "$fpath"
+        printf '  %10s  %s\n' "$(format_size "$fsize")" "$(truncate_path_for_display "$fpath" "$log_path_width")"
         found=1
     done < <(find /var/log -type f -size +"${LOG_TRUNCATE_THRESHOLD_MB}M" -exec stat -c '%s %n' {} + 2>/dev/null | sort -rn)
 
@@ -1848,12 +1945,14 @@ menu_docker_cleanup() {
     fi
 
     while true; do
+        local ui_width
+        ui_width="$(get_ui_content_width)"
         echo ""
         printf '  %s%s🐳 Docker Cleanup%s\n\n' "$BOLD" "$CYAN" "$RESET"
 
         # Show Docker disk usage
         docker system df 2>/dev/null | while IFS= read -r line; do
-            printf '  %s\n' "$line"
+            printf '  %s\n' "$(truncate_for_table "$line" "$ui_width")"
         done
         echo ""
 
@@ -1887,6 +1986,8 @@ docker_rm_stopped() {
     record_disk_start
     echo ""
     local output="" removed=0
+    local ui_width
+    ui_width="$(get_ui_content_width)"
     local containers
     containers="$(docker ps -a --filter status=exited -q 2>/dev/null)"
     if [[ -z "$containers" ]]; then
@@ -1895,7 +1996,10 @@ docker_rm_stopped() {
         return
     fi
     printf '  Stopped containers:\n'
-    docker ps -a --filter status=exited --format '  {{.ID}}  {{.Names}}  {{.Image}}  {{.Status}}' 2>/dev/null
+    docker ps -a --filter status=exited --format '{{.ID}}  {{.Names}}  {{.Image}}  {{.Status}}' 2>/dev/null \
+        | while IFS= read -r line; do
+            printf '  %s\n' "$(truncate_for_table "$line" "$ui_width")"
+          done
     echo ""
     if ! confirm "Remove stopped containers?"; then pause; return; fi
     if [[ "$DRY_RUN" -eq 0 ]]; then
@@ -2066,6 +2170,12 @@ menu_snap_flatpak_cleanup() {
 find_large_files() {
     echo ""
     printf '  %s%s🔍 Find Large Files%s\n\n' "$BOLD" "$CYAN" "$RESET"
+    local ui_width listed_path_width selected_path_width
+    ui_width="$(get_ui_content_width)"
+    listed_path_width=$(( ui_width - 17 ))
+    (( listed_path_width < 20 )) && listed_path_width=20
+    selected_path_width=$(( ui_width - 20 ))
+    (( selected_path_width < 20 )) && selected_path_width=20
 
     printf '  Minimum size in MB [%d]: ' "$LARGE_FILE_MIN_SIZE_MB"
     local input_size
@@ -2090,7 +2200,8 @@ find_large_files() {
     local count=0
     while IFS=' ' read -r size fpath; do
         count=$(( count + 1 ))
-        printf '  %s%3d)%s %10s  %s\n' "$BOLD" "$count" "$RESET" "$(format_size "$size")" "$fpath"
+        printf '  %s%3d)%s %10s  %s\n' "$BOLD" "$count" "$RESET" \
+            "$(format_size "$size")" "$(truncate_path_for_display "$fpath" "$listed_path_width")"
     done < "$TEMP_FILE"
 
     if [[ "$count" -eq 0 ]]; then
@@ -2142,7 +2253,7 @@ find_large_files() {
             local sz fp
             sz="$(echo "$line" | awk '{print $1}')"
             fp="$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^ //')"
-            printf '    %s (%s)\n' "$fp" "$(format_size "$sz")"
+            printf '    %s (%s)\n' "$(truncate_path_for_display "$fp" "$selected_path_width")" "$(format_size "$sz")"
         fi
     done
 
@@ -2182,8 +2293,14 @@ full_deep_clean() {
     print_info "Dangerous operations will still require individual confirmation."
     echo ""
 
+    local ui_width estimate_label_width estimate_table_width
     # Comprehensive estimate
     local est_logs est_pkg est_tmp est_thumb est_trash est_crash est_docker est_total
+    ui_width="$(get_ui_content_width)"
+    estimate_label_width=$(( ui_width - 15 ))
+    (( estimate_label_width > 48 )) && estimate_label_width=48
+    (( estimate_label_width < 20 )) && estimate_label_width=20
+    estimate_table_width=$(( estimate_label_width + 11 ))
 
     est_logs=$(get_rotated_logs_size)
     est_pkg=$(estimate_pkg_cache_size)
@@ -2206,15 +2323,16 @@ full_deep_clean() {
     est_total=$(( est_logs + est_pkg + est_tmp + est_thumb + est_trash + est_crash + est_docker ))
 
     printf '  %sEstimated cleanable space:%s\n\n' "$BOLD" "$RESET"
-    printf '    %-35s %10s\n' "Rotated logs" "$(format_size "$est_logs")"
-    printf '    %-35s %10s\n' "Package cache" "$(format_size "$est_pkg")"
-    printf '    %-35s %10s\n' "Temp files" "$(format_size "$est_tmp")"
-    printf '    %-35s %10s\n' "Thumbnails" "$(format_size "$est_thumb")"
-    printf '    %-35s %10s\n' "Trash" "$(format_size "$est_trash")"
-    printf '    %-35s %10s\n' "Crash dumps" "$(format_size "$est_crash")"
-    [[ "$HAS_DOCKER" -eq 1 ]] && printf '    %-35s %10s\n' "Docker" "$(format_size "$est_docker")"
-    print_separator
-    printf '    %-35s %s%10s%s\n' "Estimated total" "$BOLD" "$(format_size "$est_total")" "$RESET"
+    print_labeled_size_row "Rotated logs" "$(format_size "$est_logs")" "$estimate_label_width"
+    print_labeled_size_row "Package cache" "$(format_size "$est_pkg")" "$estimate_label_width"
+    print_labeled_size_row "Temp files" "$(format_size "$est_tmp")" "$estimate_label_width"
+    print_labeled_size_row "Thumbnails" "$(format_size "$est_thumb")" "$estimate_label_width"
+    print_labeled_size_row "Trash" "$(format_size "$est_trash")" "$estimate_label_width"
+    print_labeled_size_row "Crash dumps" "$(format_size "$est_crash")" "$estimate_label_width"
+    [[ "$HAS_DOCKER" -eq 1 ]] && print_labeled_size_row "Docker" "$(format_size "$est_docker")" "$estimate_label_width"
+    print_separator "$estimate_table_width"
+    printf '    %-*s %s%10s%s\n' "$estimate_label_width" \
+        "$(truncate_for_table "Estimated total" "$estimate_label_width")" "$BOLD" "$(format_size "$est_total")" "$RESET"
     echo ""
 
     if ! confirm "Start Full Deep Clean?"; then
