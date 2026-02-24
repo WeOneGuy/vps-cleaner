@@ -843,6 +843,34 @@ safe_rm_cache_dir() {
     fi
 }
 
+truncate_matching_files_and_count_removed() {
+    local dir="${1:-}"
+    shift
+    local removed=0 f size
+
+    [[ -d "$dir" ]] || { echo 0; return; }
+
+    if (( $# > 0 )); then
+        while IFS= read -r -d '' f; do
+            size="$(stat -c '%s' -- "$f" 2>/dev/null || echo 0)"
+            [[ "$size" =~ ^[0-9]+$ ]] || size=0
+            if truncate -s 0 -- "$f" 2>/dev/null; then
+                removed=$(( removed + size ))
+            fi
+        done < <(find "$dir" -type f \( "$@" \) -print0 2>/dev/null)
+    else
+        while IFS= read -r -d '' f; do
+            size="$(stat -c '%s' -- "$f" 2>/dev/null || echo 0)"
+            [[ "$size" =~ ^[0-9]+$ ]] || size=0
+            if truncate -s 0 -- "$f" 2>/dev/null; then
+                removed=$(( removed + size ))
+            fi
+        done < <(find "$dir" -type f -print0 2>/dev/null)
+    fi
+
+    echo "$removed"
+}
+
 # ============================================================================
 # CLEANUP FUNCTIONS
 # ============================================================================
@@ -1154,8 +1182,7 @@ clean_rotated_logs() {
 truncate_large_logs() {
     record_disk_start
     echo ""
-    local threshold_bytes=$(( LOG_TRUNCATE_THRESHOLD_MB * 1048576 ))
-    local found=0
+    local found=0 removed=0
 
     printf '  Large log files (> %dMB):\n' "$LOG_TRUNCATE_THRESHOLD_MB"
     print_separator
@@ -1179,12 +1206,12 @@ truncate_large_logs() {
     if ! confirm "Truncate large log files?"; then pause; return; fi
 
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        find /var/log -type f -size +"${LOG_TRUNCATE_THRESHOLD_MB}M" -exec truncate -s 0 {} \; 2>/dev/null || true
+        removed="$(truncate_matching_files_and_count_removed /var/log -size +"${LOG_TRUNCATE_THRESHOLD_MB}M")"
     fi
 
     local freed
     freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_cleanup_result "$removed" "$freed"
     log_action "logs" "truncate-large" "$freed"
     pause
 }
@@ -1198,9 +1225,10 @@ clean_journal_logs() {
         return
     fi
 
-    local jsize
+    local jsize jsize_after jsize_bytes jsize_after_bytes removed
     jsize="$(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[KMGT]?' || echo '0')"
     printf '  Journal size: %s\n' "$jsize"
+    jsize_bytes="$(parse_size_to_bytes "$jsize")"
 
     if ! confirm "Clean journal logs older than ${JOURNAL_RETENTION_DAYS} days?"; then
         pause
@@ -1211,9 +1239,14 @@ clean_journal_logs() {
         journalctl --vacuum-time="${JOURNAL_RETENTION_DAYS}d" 2>/dev/null || true
     fi
 
+    jsize_after="$(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[KMGT]?' || echo '0')"
+    jsize_after_bytes="$(parse_size_to_bytes "$jsize_after")"
+    removed=$(( jsize_bytes - jsize_after_bytes ))
+    (( removed < 0 )) && removed=0
+
     local freed
     freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_cleanup_result "$removed" "$freed"
     log_action "logs" "journal-clean" "$freed"
     pause
 }
@@ -1275,16 +1308,22 @@ clean_app_logs() {
     if [[ -z "$app_input" ]]; then pause; return; fi
 
     record_disk_start
+    local removed=0
 
     if [[ "${app_input,,}" == "all" ]]; then
         for app in "${!app_logs[@]}"; do
-            local d="${app_logs[$app]}"
+            local d="${app_logs[$app]}" before_d after_d delta_d
             printf '  Cleaning %s logs...' "$app"
+            before_d="$(get_size_bytes "$d")"
             if [[ "$DRY_RUN" -eq 0 ]]; then
                 find "$d" -type f \( -name '*.gz' -o -name '*.old' -o -name '*.1' -o -name '*.2' \) \
                     -delete 2>/dev/null || true
-                find "$d" -type f -size +10M -exec truncate -s 0 {} \; 2>/dev/null || true
+                truncate_matching_files_and_count_removed "$d" -size +10M >/dev/null
             fi
+            after_d="$(get_size_bytes "$d")"
+            delta_d=$(( before_d - after_d ))
+            (( delta_d < 0 )) && delta_d=0
+            removed=$(( removed + delta_d ))
             printf ' done\n'
         done
     else
@@ -1292,13 +1331,18 @@ clean_app_logs() {
         for app in "${selected[@]}"; do
             app="$(echo "$app" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
             if [[ -n "${app_logs[$app]:-}" ]]; then
-                local d="${app_logs[$app]}"
+                local d="${app_logs[$app]}" before_d after_d delta_d
                 printf '  Cleaning %s logs...' "$app"
+                before_d="$(get_size_bytes "$d")"
                 if [[ "$DRY_RUN" -eq 0 ]]; then
                     find "$d" -type f \( -name '*.gz' -o -name '*.old' -o -name '*.1' -o -name '*.2' \) \
                         -delete 2>/dev/null || true
-                    find "$d" -type f -size +10M -exec truncate -s 0 {} \; 2>/dev/null || true
+                    truncate_matching_files_and_count_removed "$d" -size +10M >/dev/null
                 fi
+                after_d="$(get_size_bytes "$d")"
+                delta_d=$(( before_d - after_d ))
+                (( delta_d < 0 )) && delta_d=0
+                removed=$(( removed + delta_d ))
                 printf ' done\n'
             else
                 print_warning "Unknown app: $app"
@@ -1308,7 +1352,7 @@ clean_app_logs() {
 
     local freed
     freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_cleanup_result "$removed" "$freed"
     log_action "logs" "app-logs-clean" "$freed"
     pause
 }
@@ -1401,7 +1445,7 @@ menu_package_cleanup() {
 clean_package_cache() {
     record_disk_start
     echo ""
-    local size
+    local size size_after removed
     size="$(estimate_pkg_cache_size)"
     printf '  Package cache size: %s\n' "$(format_size "$size")"
 
@@ -1431,9 +1475,13 @@ clean_package_cache() {
         esac
     fi
 
+    size_after="$(estimate_pkg_cache_size)"
+    removed=$(( size - size_after ))
+    (( removed < 0 )) && removed=0
+
     local freed
     freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_cleanup_result "$removed" "$freed"
     log_action "package" "cache-clean" "$freed"
     pause
 }
@@ -1873,7 +1921,7 @@ docker_system_prune() {
 docker_clean_logs() {
     record_disk_start
     echo ""
-    local total=0 total_after=0 removed=0
+    local total=0 removed=0
     local log_dir="/var/lib/docker/containers"
 
     total=$(get_find_size_bytes "$log_dir" -name '*-json.log')
@@ -1883,16 +1931,12 @@ docker_clean_logs() {
     if ! confirm "Truncate Docker container logs?"; then pause; return; fi
 
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        find "$log_dir" -name '*-json.log' -type f -exec truncate -s 0 {} \; 2>/dev/null || true
+        removed="$(truncate_matching_files_and_count_removed "$log_dir" -name '*-json.log')"
     fi
-
-    total_after=$(get_find_size_bytes "$log_dir" -name '*-json.log')
-    removed=$(( total - total_after ))
-    (( removed < 0 )) && removed=0
 
     local freed; freed=$(calc_freed_since_start)
     (( removed > freed )) && freed="$removed"
-    print_success "Freed: $(format_size "$freed")"
+    print_cleanup_result "$removed" "$freed"
     log_action "docker" "clean-logs" "$freed"
     pause
 }

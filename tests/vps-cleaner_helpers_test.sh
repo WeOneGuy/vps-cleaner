@@ -133,6 +133,29 @@ test_extract_reclaimed_bytes() {
     assert_eq "$(extract_reclaimed_bytes "nothing here")" "0" "returns 0 when reclaimed line is missing"
 }
 
+test_truncate_matching_files_and_count_removed() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf -- "$tmpdir"' RETURN
+
+    printf '12345' > "$tmpdir/a-json.log"
+    printf 'abcdefghi' > "$tmpdir/b-json.log"
+    printf 'ignore' > "$tmpdir/c.txt"
+
+    local removed
+    removed="$(truncate_matching_files_and_count_removed "$tmpdir" -name '*-json.log')"
+    if [[ "$removed" -lt 14 ]]; then
+        printf 'FAIL: truncate_matching_files_and_count_removed should report removed bytes\n' >&2
+        exit 1
+    fi
+    assert_eq "$(stat -c '%s' "$tmpdir/a-json.log")" "0" "first matched log file is truncated"
+    assert_eq "$(stat -c '%s' "$tmpdir/b-json.log")" "0" "second matched log file is truncated"
+    assert_eq "$(stat -c '%s' "$tmpdir/c.txt")" "6" "non-matching file is untouched"
+
+    rm -rf -- "$tmpdir"
+    trap - RETURN
+}
+
 main() {
     test_truncate_for_table
     test_format_size
@@ -144,6 +167,7 @@ main() {
     test_clean_all_logs_confirmation_keyword
     test_is_confirm_yes
     test_extract_reclaimed_bytes
+    test_truncate_matching_files_and_count_removed
     printf 'PASS: vps-cleaner helper tests\n'
 }
 
