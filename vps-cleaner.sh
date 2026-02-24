@@ -253,17 +253,17 @@ repeat_char() {
 print_header() {
     local disk_info
     disk_info="$(get_disk_summary_line)"
-    local title="🧹 VPS Cleaner v${SCRIPT_VERSION}"
+    local title="VPS Cleaner v${SCRIPT_VERSION}"
     local distro_line="Distro: ${DISTRO_PRETTY:-Unknown}"
     local disk_line="Disk: ${disk_info}"
-    local width=45
+    local rule_len=58
 
     echo ""
-    printf '  %s%s%s%s%s\n' "$CYAN" "$BOX_TL" "$(repeat_char "$BOX_H" "$width")" "$BOX_TR" "$RESET"
-    printf '  %s%s%s  %-*s%s%s\n' "$CYAN" "$BOX_V" "$BOLD" "$(( width - 3 ))" "$title" "$RESET$CYAN$BOX_V$RESET"
-    printf '  %s%s  %-*s%s\n' "$CYAN" "$BOX_V" "$(( width - 3 ))" "$distro_line" "$BOX_V$RESET"
-    printf '  %s%s  %-*s%s\n' "$CYAN" "$BOX_V" "$(( width - 3 ))" "$disk_line" "$BOX_V$RESET"
-    printf '  %s%s%s%s%s\n' "$CYAN" "$BOX_BL" "$(repeat_char "$BOX_H" "$width")" "$BOX_BR" "$RESET"
+    printf '  %s%s%s\n' "$CYAN" "$(repeat_char '=' "$rule_len")" "$RESET"
+    printf '  %s%s%s%s\n' "$CYAN" "$BOLD" "$title" "$RESET"
+    printf '  %s%s%s\n' "$CYAN" "$distro_line" "$RESET"
+    printf '  %s%s%s\n' "$CYAN" "$disk_line" "$RESET"
+    printf '  %s%s%s\n' "$CYAN" "$(repeat_char '=' "$rule_len")" "$RESET"
     echo ""
 }
 
@@ -279,6 +279,7 @@ print_menu() {
     printf '  %s9)%s  🗑️  Full Deep Clean\n'             "$BOLD" "$RESET"
     printf '  %s10)%s ⚙️  Settings\n'                    "$BOLD" "$RESET"
     printf '  %s11)%s 📥 Install/Update vps-cleaner\n'   "$BOLD" "$RESET"
+    printf '  %s12)%s 🗑️  Uninstall vps-cleaner\n'        "$BOLD" "$RESET"
     printf '  %s0)%s  🚪 Exit\n'                         "$BOLD" "$RESET"
     echo ""
 }
@@ -1080,7 +1081,11 @@ clean_rotated_logs() {
 
     local freed
     freed=$(calc_freed_since_start)
-    print_success "Freed: $(format_size "$freed")"
+    print_success "Removed log data (estimate): $(format_size "$size")"
+    print_success "Freed on filesystem: $(format_size "$freed")"
+    if (( size > 0 && freed == 0 )); then
+        print_warning "Filesystem free space may update later (open files, reserved blocks, or delayed reclaim)."
+    fi
     log_action "logs" "rotated-clean" "$freed"
     pause
 }
@@ -1253,7 +1258,7 @@ clean_all_logs() {
     print_error "This includes system logs, auth logs, and application logs."
     print_error "This is IRREVERSIBLE and may hinder troubleshooting."
     echo ""
-    printf '  Type "YES I UNDERSTAND" to proceed: ' > /dev/tty
+    printf '  Type "CONFIRM" to proceed: ' > /dev/tty
     local reply=""
     if [[ -r /dev/tty ]]; then
         IFS= read -r reply < /dev/tty || reply=""
@@ -1261,7 +1266,7 @@ clean_all_logs() {
         IFS= read -r reply || reply=""
     fi
 
-    if [[ "$reply" != "YES I UNDERSTAND" ]]; then
+    if [[ "$reply" != "CONFIRM" ]]; then
         print_info "Cancelled."
         pause
         return
@@ -2351,7 +2356,7 @@ main() {
         print_menu
 
         local choice
-        if ! read_choice "Enter choice" 11; then
+        if ! read_choice "Enter choice" 12; then
             echo ""
             print_error "Input stream is closed. Run script in an interactive terminal."
             exit 1
@@ -2370,6 +2375,7 @@ main() {
             9)  full_deep_clean ;;
             10) menu_settings ;;
             11) menu_install_update ;;
+            12) uninstall_self ;;
             0)
                 echo ""
                 print_info "Goodbye!"
@@ -2377,10 +2383,10 @@ main() {
                 exit 0
                 ;;
             "")
-                print_warning "Please enter a menu number (0-11)."
+                print_warning "Please enter a menu number (0-12)."
                 ;;
             *)
-                print_error "Invalid choice. Please enter 0-11."
+                print_error "Invalid choice. Please enter 0-12."
                 ;;
         esac
     done
