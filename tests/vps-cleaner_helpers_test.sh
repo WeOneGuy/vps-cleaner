@@ -133,6 +133,29 @@ test_extract_reclaimed_bytes() {
     assert_eq "$(extract_reclaimed_bytes "nothing here")" "0" "returns 0 when reclaimed line is missing"
 }
 
+test_get_docker_reclaimable_estimate_bytes() {
+    local total
+    total="$(
+        docker() {
+            if [[ "${1:-}" == "system" && "${2:-}" == "df" && "${3:-}" == "--format" ]]; then
+                printf '2.801100MB (90%%)\n0B (0%%)\n1.5GB (10%%)\n'
+                return 0
+            fi
+            return 1
+        }
+        get_docker_reclaimable_estimate_bytes
+    )"
+
+    if [[ ! "$total" =~ ^[0-9]+$ ]]; then
+        printf 'FAIL: get_docker_reclaimable_estimate_bytes should return integer bytes\n' >&2
+        exit 1
+    fi
+    if [[ "$total" -le 1000000000 ]]; then
+        printf 'FAIL: get_docker_reclaimable_estimate_bytes should sum parsed sizes\n' >&2
+        exit 1
+    fi
+}
+
 test_truncate_matching_files_and_count_removed() {
     local tmpdir
     tmpdir="$(mktemp -d)"
@@ -167,6 +190,7 @@ main() {
     test_clean_all_logs_confirmation_keyword
     test_is_confirm_yes
     test_extract_reclaimed_bytes
+    test_get_docker_reclaimable_estimate_bytes
     test_truncate_matching_files_and_count_removed
     printf 'PASS: vps-cleaner helper tests\n'
 }

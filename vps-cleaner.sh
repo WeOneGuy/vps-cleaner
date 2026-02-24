@@ -450,6 +450,20 @@ extract_reclaimed_bytes() {
     parse_size_to_bytes "$reclaimed_raw"
 }
 
+get_docker_reclaimable_estimate_bytes() {
+    local total=0 line token bytes
+
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        token="$(echo "$line" | awk '{print $1}')"
+        bytes="$(parse_size_to_bytes "$token")"
+        [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+        total=$(( total + bytes ))
+    done < <(docker system df --format '{{.Reclaimable}}' 2>/dev/null)
+
+    echo "$total"
+}
+
 # Read numeric choice
 READ_CHOICE_VALUE=""
 read_choice() {
@@ -2143,9 +2157,7 @@ full_deep_clean() {
     est_crash=$(get_size_bytes /var/crash 2>/dev/null || echo 0)
     est_docker=0
     if [[ "$HAS_DOCKER" -eq 1 ]]; then
-        est_docker=$(docker system df --format '{{.Reclaimable}}' 2>/dev/null \
-            | head -1 | sed 's/[^0-9.]//g' || echo "0")
-        est_docker=$(( ${est_docker:-0} * 1048576 )) 2>/dev/null || est_docker=0
+        est_docker="$(get_docker_reclaimable_estimate_bytes)"
     fi
 
     est_total=$(( est_logs + est_pkg + est_tmp + est_thumb + est_trash + est_crash + est_docker ))
