@@ -45,6 +45,12 @@ test_should_skip_mountpoint() {
     assert_failure "does not skip regular root mount" should_skip_mountpoint "/"
 }
 
+test_should_skip_filesystem() {
+    assert_success "skips docker rootfs overlay filesystem" should_skip_filesystem "/var/lib/docker/rootfs/overlayfs/abc123"
+    assert_success "skips docker overlay2 filesystem" should_skip_filesystem "/var/lib/docker/overlay2/abc123"
+    assert_failure "does not skip regular overlay filesystem" should_skip_filesystem "overlay"
+}
+
 test_run_timed_pipeline() {
     local output
     output="$(run_timed_pipeline 2 "printf 'ok'")"
@@ -61,6 +67,7 @@ test_run_timed_pipeline() {
 main() {
     test_truncate_for_table
     test_should_skip_mountpoint
+    test_should_skip_filesystem
     test_run_timed_pipeline
     printf 'PASS: vps-cleaner helper tests\n'
 }

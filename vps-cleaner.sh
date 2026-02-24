@@ -456,15 +456,55 @@ should_skip_mountpoint() {
     return 1
 }
 
+should_skip_filesystem() {
+    local filesystem="${1:-}"
+    [[ "$filesystem" == /var/lib/docker/rootfs/overlayfs/* ]] && return 0
+    [[ "$filesystem" == /var/lib/docker/overlay2/* ]] && return 0
+    return 1
+}
+
 run_timed_pipeline() {
     local timeout_sec="${1:-20}"
     shift
+    local cmd="$*"
 
     if command -v timeout &>/dev/null; then
-        timeout --foreground "$timeout_sec" bash -o pipefail -c "$*"
-    else
-        bash -o pipefail -c "$*"
+        timeout --foreground "$timeout_sec" bash -o pipefail -c "$cmd"
+        return $?
     fi
+
+    # Fallback timeout for systems without GNU timeout.
+    local out_file status_file runner_pid watcher_pid rc
+    out_file="$(mktemp "${TMPDIR:-/tmp}/vps-cleaner-run.XXXXXX")"
+    status_file="$(mktemp "${TMPDIR:-/tmp}/vps-cleaner-run.XXXXXX")"
+
+    (
+        bash -o pipefail -c "$cmd" > "$out_file"
+        printf '%s' "$?" > "$status_file"
+    ) &
+    runner_pid=$!
+
+    (
+        sleep "$timeout_sec"
+        kill -TERM "$runner_pid" 2>/dev/null || true
+    ) &
+    watcher_pid=$!
+
+    wait "$runner_pid" 2>/dev/null || true
+
+    if kill -0 "$watcher_pid" 2>/dev/null; then
+        kill "$watcher_pid" 2>/dev/null || true
+    fi
+    wait "$watcher_pid" 2>/dev/null || true
+
+    rc=124
+    if [[ -s "$status_file" ]]; then
+        rc="$(cat "$status_file" 2>/dev/null || echo 1)"
+    fi
+
+    cat "$out_file"
+    rm -f -- "$out_file" "$status_file"
+    return "$rc"
 }
 
 # ============================================================================
@@ -767,13 +807,11 @@ show_disk_overview() {
     print_separator
 
     while IFS= read -r line; do
-        local mp sz used avail pct pct_num
-        mp="$(echo "$line"   | awk '{print $6}')"
+        local fs mp sz used avail pct pct_num
+        read -r fs sz used avail pct mp _ <<< "$line"
+        [[ -z "${mp:-}" ]] && continue
+        should_skip_filesystem "$fs" && continue
         should_skip_mountpoint "$mp" && continue
-        sz="$(echo "$line"   | awk '{print $2}')"
-        used="$(echo "$line" | awk '{print $3}')"
-        avail="$(echo "$line"| awk '{print $4}')"
-        pct="$(echo "$line"  | awk '{print $5}')"
         pct_num="${pct/\%/}"
 
         printf '  %-20s %8s %8s %8s %5s  ' "$(truncate_for_table "$mp" 20)" "$sz" "$used" "$avail" "$pct"
@@ -789,13 +827,11 @@ show_disk_overview() {
     print_separator
 
     while IFS= read -r line; do
-        local mp total used free pct
-        mp="$(echo "$line"    | awk '{print $6}')"
+        local fs mp total used free pct
+        read -r fs total used free pct mp _ <<< "$line"
+        [[ -z "${mp:-}" ]] && continue
+        should_skip_filesystem "$fs" && continue
         should_skip_mountpoint "$mp" && continue
-        total="$(echo "$line" | awk '{print $2}')"
-        used="$(echo "$line"  | awk '{print $3}')"
-        free="$(echo "$line"  | awk '{print $4}')"
-        pct="$(echo "$line"   | awk '{print $5}')"
 
         printf '  %-20s %10s %10s %10s %5s\n' "$(truncate_for_table "$mp" 20)" "$total" "$used" "$free" "$pct"
     done < <(df -P -i -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {print}')
@@ -806,7 +842,7 @@ show_disk_overview() {
     print_separator
 
     local top_dirs_output
-    if top_dirs_output="$(run_timed_pipeline 20 "du -xh -d 2 / --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/snap --exclude=/var/lib/docker/rootfs/overlayfs --exclude=/var/lib/docker/overlay2 2>/dev/null | sort -rh | head -15")"; then
+    if top_dirs_output="$(run_timed_pipeline 20 "du -x -h -d 2 / --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/snap --exclude=/var/lib/docker/rootfs/overlayfs --exclude=/var/lib/docker/overlay2 2>/dev/null | sort -rh | head -15")"; then
         while IFS= read -r dline; do
             [[ -z "$dline" ]] && continue
             printf '  %s\n' "$dline"
