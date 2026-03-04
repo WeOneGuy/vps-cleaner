@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — 2026-03-04
+
+### Added
+
+- Dedicated `VERSION` file as the canonical remote version source for update checks
+- SemVer validation and comparison helpers for correct version precedence (`major.minor.patch`, pre-release, build metadata)
+- Tests for SemVer logic and update decision flow (`tests/vps-cleaner_versioning_test.sh`, `tests/vps-cleaner_update_flow_test.sh`)
+
+### Changed
+
+- Update checks now compare versions by SemVer precedence instead of plain string inequality
+- `install.sh` now downloads `VERSION` and stamps the downloaded script with that version before execution
+- Self-install and update flows now stamp `SCRIPT_VERSION` into the installed script to keep local version metadata synchronized
+
 ## [1.0.0] — 2026-02-24
 
 ### Added

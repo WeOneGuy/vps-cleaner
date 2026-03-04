@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # vps-cleaner — Comprehensive VPS Disk Cleaner
-# Version:  1.0.0
+# Version:  managed by SCRIPT_VERSION
 # GitHub:   https://github.com/WeOneGuy/vps-cleaner
 # License:  MIT
 # ============================================================================
@@ -15,10 +15,11 @@ set -euo pipefail
 # CONSTANTS
 # ============================================================================
 
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.1.0"
 readonly SCRIPT_NAME="vps-cleaner"
 readonly SCRIPT_REPO="https://github.com/WeOneGuy/vps-cleaner"
 readonly SCRIPT_RAW_URL="https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/vps-cleaner.sh"
+readonly SCRIPT_VERSION_URL="https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/VERSION"
 readonly CONFIG_FILE="${HOME}/.vps-cleaner.conf"
 readonly LOG_FILE="/var/log/vps-cleaner.log"
 readonly SELF_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
@@ -305,7 +306,11 @@ get_ui_content_width() {
 print_header() {
     local disk_info
     disk_info="$(get_disk_summary_line)"
-    local title="VPS Cleaner v${SCRIPT_VERSION}"
+    local current_version=""
+    current_version="$(get_current_script_version 2>/dev/null || true)"
+    [[ -z "$current_version" ]] && current_version="$SCRIPT_VERSION"
+
+    local title="VPS Cleaner v${current_version}"
     local distro_line="Distro: ${DISTRO_PRETTY:-Unknown}"
     local disk_line="Disk: ${disk_info}"
     local rule_len
@@ -2535,8 +2540,12 @@ menu_install_update() {
             [[ -z "$installed_version" ]] && installed_version="unknown"
         fi
 
+        local current_version=""
+        current_version="$(get_current_script_version 2>/dev/null || true)"
+        [[ -z "$current_version" ]] && current_version="$SCRIPT_VERSION"
+
         printf '  Installed:       %s\n' "$installed"
-        printf '  Current version: %s\n' "$SCRIPT_VERSION"
+        printf '  Current version: %s\n' "$current_version"
         [[ "$installed" == "yes" ]] && printf '  Installed version: %s\n' "$installed_version"
         echo ""
 
@@ -2567,9 +2576,225 @@ extract_script_version_from_file() {
     [[ -n "$script_path" && -f "$script_path" ]] || return 1
 
     local version=""
-    version="$(sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p' "$script_path" 2>/dev/null | head -1)"
+    version="$(sed -nE 's/^[[:space:]]*readonly[[:space:]]+SCRIPT_VERSION="([^"]+)".*$/\1/p' "$script_path" 2>/dev/null | head -1)"
+    is_valid_semver "$version" || return 1
     [[ -n "$version" ]] || return 1
     printf '%s' "$version"
+}
+
+read_version_from_file() {
+    local version_file="${1:-}"
+    [[ -n "$version_file" && -f "$version_file" ]] || return 1
+
+    local version=""
+    version="$(head -n 1 "$version_file" 2>/dev/null | tr -d '\r' \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    is_valid_semver "$version" || return 1
+    printf '%s' "$version"
+}
+
+is_valid_semver() {
+    local version="${1:-}"
+    [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$ ]] || return 1
+
+    local prerelease=""
+    if [[ "$version" == *-* ]]; then
+        prerelease="${version#*-}"
+        prerelease="${prerelease%%+*}"
+    fi
+
+    if [[ -n "$prerelease" ]]; then
+        local identifier
+        local -a identifiers=()
+        IFS='.' read -r -a identifiers <<< "$prerelease"
+        for identifier in "${identifiers[@]}"; do
+            [[ -n "$identifier" ]] || return 1
+            if [[ "$identifier" =~ ^[0-9]+$ ]] && [[ "$identifier" =~ ^0[0-9]+$ ]]; then
+                return 1
+            fi
+        done
+    fi
+
+    return 0
+}
+
+compare_semver_identifiers() {
+    local left="${1:-}" right="${2:-}"
+
+    local left_is_numeric=0
+    local right_is_numeric=0
+    [[ "$left" =~ ^[0-9]+$ ]] && left_is_numeric=1
+    [[ "$right" =~ ^[0-9]+$ ]] && right_is_numeric=1
+
+    if (( left_is_numeric == 1 && right_is_numeric == 1 )); then
+        if (( 10#$left < 10#$right )); then
+            printf '%s' "-1"
+        elif (( 10#$left > 10#$right )); then
+            printf '%s' "1"
+        else
+            printf '%s' "0"
+        fi
+        return 0
+    fi
+
+    if (( left_is_numeric == 1 && right_is_numeric == 0 )); then
+        printf '%s' "-1"
+        return 0
+    fi
+
+    if (( left_is_numeric == 0 && right_is_numeric == 1 )); then
+        printf '%s' "1"
+        return 0
+    fi
+
+    if [[ "$left" < "$right" ]]; then
+        printf '%s' "-1"
+    elif [[ "$left" > "$right" ]]; then
+        printf '%s' "1"
+    else
+        printf '%s' "0"
+    fi
+}
+
+compare_semver() {
+    local left="${1:-}" right="${2:-}"
+    is_valid_semver "$left" || return 1
+    is_valid_semver "$right" || return 1
+
+    local left_no_build="${left%%+*}"
+    local right_no_build="${right%%+*}"
+    local left_core="${left_no_build%%-*}"
+    local right_core="${right_no_build%%-*}"
+    local left_pre="" right_pre=""
+
+    [[ "$left_no_build" == *-* ]] && left_pre="${left_no_build#*-}"
+    [[ "$right_no_build" == *-* ]] && right_pre="${right_no_build#*-}"
+
+    local left_major left_minor left_patch
+    local right_major right_minor right_patch
+    IFS='.' read -r left_major left_minor left_patch <<< "$left_core"
+    IFS='.' read -r right_major right_minor right_patch <<< "$right_core"
+
+    if (( 10#$left_major < 10#$right_major )); then
+        printf '%s' "-1"
+        return 0
+    fi
+    if (( 10#$left_major > 10#$right_major )); then
+        printf '%s' "1"
+        return 0
+    fi
+    if (( 10#$left_minor < 10#$right_minor )); then
+        printf '%s' "-1"
+        return 0
+    fi
+    if (( 10#$left_minor > 10#$right_minor )); then
+        printf '%s' "1"
+        return 0
+    fi
+    if (( 10#$left_patch < 10#$right_patch )); then
+        printf '%s' "-1"
+        return 0
+    fi
+    if (( 10#$left_patch > 10#$right_patch )); then
+        printf '%s' "1"
+        return 0
+    fi
+
+    if [[ -z "$left_pre" && -z "$right_pre" ]]; then
+        printf '%s' "0"
+        return 0
+    fi
+    if [[ -z "$left_pre" ]]; then
+        printf '%s' "1"
+        return 0
+    fi
+    if [[ -z "$right_pre" ]]; then
+        printf '%s' "-1"
+        return 0
+    fi
+
+    local -a left_ids=() right_ids=()
+    IFS='.' read -r -a left_ids <<< "$left_pre"
+    IFS='.' read -r -a right_ids <<< "$right_pre"
+
+    local max_len="${#left_ids[@]}"
+    if (( ${#right_ids[@]} > max_len )); then
+        max_len="${#right_ids[@]}"
+    fi
+
+    local i cmp
+    for (( i=0; i<max_len; i++ )); do
+        if (( i >= ${#left_ids[@]} )); then
+            printf '%s' "-1"
+            return 0
+        fi
+        if (( i >= ${#right_ids[@]} )); then
+            printf '%s' "1"
+            return 0
+        fi
+
+        cmp="$(compare_semver_identifiers "${left_ids[$i]}" "${right_ids[$i]}")" || return 1
+        if [[ "$cmp" != "0" ]]; then
+            printf '%s' "$cmp"
+            return 0
+        fi
+    done
+
+    printf '%s' "0"
+}
+
+is_remote_version_newer() {
+    local current_version="${1:-}" remote_version="${2:-}"
+    local cmp=""
+    cmp="$(compare_semver "$current_version" "$remote_version" 2>/dev/null)" || return 1
+    [[ "$cmp" == "-1" ]]
+}
+
+get_current_script_version() {
+    local script_dir version=""
+    script_dir="$(dirname "$SELF_PATH")"
+
+    version="$(read_version_from_file "${script_dir}/VERSION" 2>/dev/null || true)"
+    if [[ -n "$version" ]]; then
+        printf '%s' "$version"
+        return 0
+    fi
+
+    version="$(extract_script_version_from_file "$SELF_PATH" 2>/dev/null || true)"
+    [[ -n "$version" ]] || return 1
+    printf '%s' "$version"
+}
+
+stamp_script_version_in_file() {
+    local script_path="${1:-}" target_version="${2:-}"
+    [[ -n "$script_path" && -f "$script_path" ]] || return 1
+    is_valid_semver "$target_version" || return 1
+
+    local tmp_file=""
+    tmp_file="$(mktemp "${TMPDIR:-/tmp}/vps-cleaner-version-stamp.XXXXXX")" || return 1
+
+    if ! awk -v version="$target_version" '
+        BEGIN { replaced=0 }
+        /^[[:space:]]*readonly[[:space:]]+SCRIPT_VERSION="[^"]*".*$/ {
+            if (replaced == 0) {
+                print "readonly SCRIPT_VERSION=\"" version "\""
+                replaced=1
+                next
+            }
+        }
+        { print }
+        END { if (replaced == 0) exit 1 }
+    ' "$script_path" > "$tmp_file"; then
+        rm -f -- "$tmp_file" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! cat -- "$tmp_file" > "$script_path" 2>/dev/null; then
+        rm -f -- "$tmp_file" 2>/dev/null || true
+        return 1
+    fi
+
+    rm -f -- "$tmp_file" 2>/dev/null || true
 }
 
 fetch_remote_version() {
@@ -2577,14 +2802,14 @@ fetch_remote_version() {
     local remote_version=""
 
     if [[ "$HAS_CURL" -eq 1 ]]; then
-        remote_version="$(curl -fsSL --max-time "$timeout_sec" "$SCRIPT_RAW_URL" 2>/dev/null \
-            | sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p' | head -1 || true)"
+        remote_version="$(curl -fsSL --max-time "$timeout_sec" "$SCRIPT_VERSION_URL" 2>/dev/null || true)"
     elif [[ "$HAS_WGET" -eq 1 ]]; then
-        remote_version="$(wget -qO- --timeout="$timeout_sec" "$SCRIPT_RAW_URL" 2>/dev/null \
-            | sed -n 's/.*SCRIPT_VERSION="\([^"]*\)".*/\1/p' | head -1 || true)"
+        remote_version="$(wget -qO- --timeout="$timeout_sec" "$SCRIPT_VERSION_URL" 2>/dev/null || true)"
     fi
 
-    [[ -n "$remote_version" ]] || return 1
+    remote_version="$(printf '%s' "$remote_version" | tr -d '\r' \
+        | head -n 1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    is_valid_semver "$remote_version" || return 1
     printf '%s' "$remote_version"
 }
 
@@ -2661,10 +2886,39 @@ install_self() {
         return
     fi
 
-    if ! install_script_atomically "$SELF_PATH" "$INSTALL_PATH"; then
+    local install_version=""
+    install_version="$(get_current_script_version 2>/dev/null || true)"
+    [[ -z "$install_version" ]] && install_version="$SCRIPT_VERSION"
+    if ! is_valid_semver "$install_version"; then
+        print_error "Current script version is invalid: $install_version"
+        return
+    fi
+
+    local staged_copy=""
+    staged_copy="$(mktemp "${TMPDIR:-/tmp}/vps-cleaner-install.XXXXXX")" || {
+        print_error "Failed to create temporary file for install."
+        return
+    }
+
+    if ! cp -- "$SELF_PATH" "$staged_copy" 2>/dev/null; then
+        rm -f -- "$staged_copy" 2>/dev/null || true
+        print_error "Failed to prepare script for install."
+        return
+    fi
+
+    if ! stamp_script_version_in_file "$staged_copy" "$install_version"; then
+        rm -f -- "$staged_copy" 2>/dev/null || true
+        print_error "Failed to stamp script version for install."
+        return
+    fi
+
+    if ! install_script_atomically "$staged_copy" "$INSTALL_PATH"; then
+        rm -f -- "$staged_copy" 2>/dev/null || true
         print_error "Failed to copy to $INSTALL_PATH"
         return
     fi
+    rm -f -- "$staged_copy" 2>/dev/null || true
+
     print_success "Installed to $INSTALL_PATH"
     log_action "install" "install" "0"
 }
@@ -2677,7 +2931,17 @@ check_update() {
     fi
 
     printf '  Checking for updates...\n'
+    local current_version=""
     local remote_version=""
+    local compare_result=""
+
+    current_version="$(get_current_script_version 2>/dev/null || true)"
+    [[ -z "$current_version" ]] && current_version="$SCRIPT_VERSION"
+    if ! is_valid_semver "$current_version"; then
+        print_warning "Current version is invalid: $current_version"
+        return
+    fi
+
     remote_version="$(fetch_remote_version 10 2>/dev/null || true)"
 
     if [[ -z "$remote_version" ]]; then
@@ -2688,10 +2952,16 @@ check_update() {
     LAST_UPDATE_CHECK="$(date +%s)"
     save_config
 
-    printf '  Current:  %s\n' "$SCRIPT_VERSION"
+    printf '  Current:  %s\n' "$current_version"
     printf '  Latest:   %s\n' "$remote_version"
 
-    if [[ "$remote_version" != "$SCRIPT_VERSION" ]]; then
+    compare_result="$(compare_semver "$current_version" "$remote_version" 2>/dev/null || true)"
+    if [[ -z "$compare_result" ]]; then
+        print_warning "Failed to compare versions: current=$current_version remote=$remote_version"
+        return
+    fi
+
+    if [[ "$compare_result" == "-1" ]]; then
         print_info "A newer version ($remote_version) is available."
         if confirm "Download and install update?"; then
             local temp_download=""
@@ -2703,6 +2973,12 @@ check_update() {
             if ! download_remote_script "$temp_download" 30; then
                 rm -f -- "$temp_download" 2>/dev/null || true
                 print_error "Failed to download update."
+                return
+            fi
+
+            if ! stamp_script_version_in_file "$temp_download" "$remote_version"; then
+                rm -f -- "$temp_download" 2>/dev/null || true
+                print_error "Failed to stamp downloaded update with version $remote_version."
                 return
             fi
 
@@ -2722,8 +2998,10 @@ check_update() {
             print_success "Updated to v${remote_version}. Restart the script to use the new version."
             log_action "update" "updated-to-$remote_version" "0"
         fi
-    else
+    elif [[ "$compare_result" == "0" ]]; then
         print_success "Already on the latest version."
+    else
+        print_info "Current version ($current_version) is newer than remote ($remote_version)."
     fi
 }
 
@@ -2759,15 +3037,24 @@ auto_update_check() {
     # Check once per 24 hours (86400 seconds)
     if (( diff < 86400 )); then return; fi
 
+    local current_version=""
+    current_version="$(get_current_script_version 2>/dev/null || true)"
+    [[ -z "$current_version" ]] && current_version="$SCRIPT_VERSION"
+    is_valid_semver "$current_version" || return
+
     local remote_version=""
     remote_version="$(fetch_remote_version 5 2>/dev/null || true)"
     [[ -z "$remote_version" ]] && return
 
+    local compare_result=""
+    compare_result="$(compare_semver "$current_version" "$remote_version" 2>/dev/null || true)"
+    [[ -z "$compare_result" ]] && return
+
     LAST_UPDATE_CHECK="$now"
     save_config
 
-    if [[ -n "$remote_version" && "$remote_version" != "$SCRIPT_VERSION" ]]; then
-        print_info "Update available: v${remote_version} (current: v${SCRIPT_VERSION})"
+    if [[ "$compare_result" == "-1" ]]; then
+        print_info "Update available: v${remote_version} (current: v${current_version})"
         print_info "Use menu option 11 to update."
         echo ""
     fi

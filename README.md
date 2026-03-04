@@ -39,7 +39,7 @@ If you want permanent installation, use menu option `11) Install/Update vps-clea
 - 🔍 **Large file finder** with interactive deletion
 - 🗑️ **Full deep clean** with step-by-step progress
 - ⚙️ **Configurable settings** — thresholds, retention periods, dry-run mode
-- 📥 **Self-install and auto-update**
+- 📥 **Self-install and auto-update** with SemVer-based version checks
 - **Cross-distro** — Ubuntu, Debian, CentOS, RHEL, Rocky, Alma, Fedora, Arch, Alpine, openSUSE
 - **Safe by design** — protected paths, confirmations, dry-run mode
 - **Colorful UI** with progress bars, spinners, and Unicode box drawing
@@ -55,6 +55,8 @@ curl -fsSL https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.s
 This downloads the script, runs it once, and removes the temporary file on exit.
 No automatic installation to `/usr/local/bin/vps-cleaner` is performed.
 Permanent install is optional from menu option `11) Install/Update vps-cleaner`.
+
+Version metadata for updates is managed through the repository `VERSION` file.
 
 ### Manual Install
 

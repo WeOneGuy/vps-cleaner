@@ -87,12 +87,12 @@ test_fetch_remote_version_with_curl_stub() {
         HAS_CURL=1
         HAS_WGET=0
         curl() {
-            printf '#!/usr/bin/env bash\nreadonly SCRIPT_VERSION="5.4.3"\n'
+            printf '5.4.3\n'
         }
         fetch_remote_version 1
     })"
 
-    assert_eq "$out" "5.4.3" "fetch_remote_version parses version from curl output"
+    assert_eq "$out" "5.4.3" "fetch_remote_version reads semver from VERSION file content"
 }
 
 test_fetch_remote_version_failure_on_invalid_response() {
@@ -145,6 +145,24 @@ test_download_remote_script_with_curl_stub() {
     trap - RETURN
 }
 
+test_stamp_script_version_in_file() {
+    local tmpfile
+    tmpfile="$(mktemp)"
+    trap 'rm -f -- "$tmpfile"' RETURN
+
+    cat > "$tmpfile" <<'EOF'
+#!/usr/bin/env bash
+readonly SCRIPT_VERSION="1.0.0"
+EOF
+
+    assert_success "stamps script version" stamp_script_version_in_file "$tmpfile" "2.3.4-rc.1+build.7"
+    assert_eq "$(extract_script_version_from_file "$tmpfile")" "2.3.4-rc.1+build.7" "extracts stamped version"
+    assert_failure "rejects invalid semver for stamp" stamp_script_version_in_file "$tmpfile" "invalid"
+
+    rm -f -- "$tmpfile"
+    trap - RETURN
+}
+
 test_install_script_atomically() {
     local tmpdir source target
     tmpdir="$(mktemp -d)"
@@ -178,6 +196,7 @@ main() {
     test_fetch_remote_version_with_curl_stub
     test_fetch_remote_version_failure_on_invalid_response
     test_download_remote_script_with_curl_stub
+    test_stamp_script_version_in_file
     test_install_script_atomically
     printf 'PASS: vps-cleaner update helper tests\n'
 }
