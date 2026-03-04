@@ -2299,6 +2299,7 @@ full_deep_clean() {
     echo ""
 
     local ui_width estimate_label_width estimate_table_width
+    local had_errors=0
     # Comprehensive estimate
     local est_logs est_pkg est_tmp est_thumb est_trash est_crash est_docker est_total
     ui_width="$(get_ui_content_width)"
