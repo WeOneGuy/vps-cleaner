@@ -517,6 +517,26 @@ read_choice() {
     return 0
 }
 
+READ_LINE_VALUE=""
+read_interactive_line() {
+    local value=""
+
+    if [[ -r /dev/tty ]]; then
+        if ! IFS= read -r value < /dev/tty; then
+            READ_LINE_VALUE=""
+            return 1
+        fi
+    else
+        if ! IFS= read -r value; then
+            READ_LINE_VALUE=""
+            return 1
+        fi
+    fi
+
+    READ_LINE_VALUE="$value"
+    return 0
+}
+
 # Press enter to continue
 pause() {
     if [[ -w /dev/tty ]]; then
@@ -2184,7 +2204,11 @@ find_large_files() {
 
     printf '  Minimum size in MB [%d]: ' "$LARGE_FILE_MIN_SIZE_MB"
     local input_size
-    read -r input_size
+    if read_interactive_line; then
+        input_size="$READ_LINE_VALUE"
+    else
+        input_size=""
+    fi
     if [[ -n "$input_size" ]]; then
         if [[ "$input_size" =~ ^[0-9]+$ ]] && [[ "$input_size" -gt 0 ]]; then
             LARGE_FILE_MIN_SIZE_MB="$input_size"
@@ -2220,7 +2244,11 @@ find_large_files() {
     echo ""
     printf '  Select files to delete (e.g. 1,3,5 or 1-5 or "none"): '
     local selection
-    read -r selection
+    if read_interactive_line; then
+        selection="$READ_LINE_VALUE"
+    else
+        selection=""
+    fi
 
     if [[ -z "$selection" || "${selection,,}" == "none" ]]; then
         print_info "No files selected."
