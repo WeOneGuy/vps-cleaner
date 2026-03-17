@@ -25,6 +25,12 @@ readonly LOG_FILE="/var/log/vps-cleaner.log"
 readonly SELF_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 readonly INSTALL_PATH="/usr/local/bin/vps-cleaner"
 readonly DISK_OVERVIEW_SCAN_TIMEOUT_SEC=45
+readonly DISK_SCAN_CACHE_TTL_SEC=300
+readonly DISK_SCAN_CACHE_MAGIC="vps-cleaner-disk-scan-cache-v1"
+readonly DISK_OVERVIEW_SCAN_DEPTH=3
+readonly DISK_OVERVIEW_ROOT_LIMIT=6
+readonly DISK_OVERVIEW_HOTSPOT_LIMIT=10
+readonly DISK_OVERVIEW_TOP_FILES_LIMIT=10
 
 # Protected paths — NEVER delete these
 readonly PROTECTED_PATHS=(
@@ -105,6 +111,9 @@ HAS_TPUT=0
 HAS_CURL=0
 HAS_WGET=0
 HAS_DU_BYTES=0
+FIND_SUPPORTS_PRINTF=""
+SCAN_CACHE_LAST_STATUS=""
+SCAN_CACHE_LAST_AGE_SEC=0
 
 # ============================================================================
 # CONFIGURATION — defaults + load from file
@@ -366,6 +375,10 @@ print_cleanup_result() {
     local removed="${1:-0}" freed="${2:-0}"
     (( removed < 0 )) && removed=0
     (( freed < 0 )) && freed=0
+
+    if [[ "$DRY_RUN" -eq 0 ]] && (( removed > 0 || freed > 0 )); then
+        invalidate_disk_scan_cache || true
+    fi
 
     if (( removed > 0 )); then
         print_success "Removed data: $(format_size "$removed")"
@@ -657,6 +670,324 @@ run_timed_pipeline() {
     cat "$out_file"
     rm -f -- "$out_file" "$status_file"
     return "$rc"
+}
+
+get_disk_scan_cache_dir() {
+    local base_dir=""
+    if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+        base_dir="${XDG_CACHE_HOME%/}"
+    elif [[ -n "${HOME:-}" ]]; then
+        base_dir="${HOME%/}/.cache"
+    else
+        base_dir="${TMPDIR:-/tmp}"
+    fi
+
+    printf '%s/vps-cleaner' "$base_dir"
+}
+
+sanitize_disk_scan_cache_key() {
+    local key="${1:-scan}"
+    printf '%s' "$key" | sed 's/[^[:alnum:]._-]/_/g'
+}
+
+get_disk_scan_cache_path() {
+    local key
+    key="$(sanitize_disk_scan_cache_key "${1:-scan}")"
+    printf '%s/%s-%s.cache' "$(get_disk_scan_cache_dir)" "$DISK_SCAN_CACHE_MAGIC" "$key"
+}
+
+format_scan_cache_age() {
+    local age_sec="${1:-0}"
+    if [[ ! "$age_sec" =~ ^[0-9]+$ ]]; then
+        age_sec=0
+    fi
+
+    if (( age_sec < 60 )); then
+        printf '%ss' "$age_sec"
+        return
+    fi
+    if (( age_sec < 3600 )); then
+        printf '%sm' "$(( age_sec / 60 ))"
+        return
+    fi
+    if (( age_sec < 86400 )); then
+        printf '%sh' "$(( age_sec / 3600 ))"
+        return
+    fi
+    printf '%sd' "$(( age_sec / 86400 ))"
+}
+
+read_disk_scan_cache() {
+    local cache_key="${1:-}"
+    local ttl_sec="${2:-0}"
+    local cache_path cache_header cache_mtime now age_sec
+
+    SCAN_CACHE_LAST_STATUS="miss"
+    SCAN_CACHE_LAST_AGE_SEC=0
+
+    [[ -n "$cache_key" ]] || return 1
+    [[ "$ttl_sec" =~ ^[0-9]+$ ]] || return 1
+
+    cache_path="$(get_disk_scan_cache_path "$cache_key")"
+    [[ -f "$cache_path" ]] || return 1
+
+    if ! IFS= read -r cache_header < "$cache_path"; then
+        return 1
+    fi
+    [[ "$cache_header" == "$DISK_SCAN_CACHE_MAGIC" ]] || return 1
+
+    cache_mtime="$(stat -c '%Y' -- "$cache_path" 2>/dev/null)" || return 1
+    now="$(date '+%s')"
+    age_sec=$(( now - cache_mtime ))
+    (( age_sec < 0 )) && age_sec=0
+    (( age_sec <= ttl_sec )) || return 1
+
+    SCAN_CACHE_LAST_STATUS="hit"
+    SCAN_CACHE_LAST_AGE_SEC="$age_sec"
+    tail -n +2 -- "$cache_path"
+}
+
+write_disk_scan_cache() {
+    local cache_key="${1:-}"
+    local cache_payload="${2-}"
+    local cache_dir cache_path temp_path
+
+    [[ -n "$cache_key" ]] || return 1
+
+    cache_dir="$(get_disk_scan_cache_dir)"
+    cache_path="$(get_disk_scan_cache_path "$cache_key")"
+
+    mkdir -p -- "$cache_dir" || return 1
+    temp_path="$(mktemp "${cache_dir}/.scan-cache.XXXXXX")" || return 1
+
+    if ! {
+        printf '%s\n' "$DISK_SCAN_CACHE_MAGIC"
+        printf '%s' "$cache_payload"
+    } > "$temp_path"; then
+        rm -f -- "$temp_path"
+        return 1
+    fi
+
+    if ! mv -f -- "$temp_path" "$cache_path"; then
+        rm -f -- "$temp_path"
+        return 1
+    fi
+}
+
+write_disk_scan_cache_from_file() {
+    local cache_key="${1:-}"
+    local source_file="${2:-}"
+    local cache_dir cache_path temp_path
+
+    [[ -n "$cache_key" ]] || return 1
+    [[ -f "$source_file" ]] || return 1
+
+    cache_dir="$(get_disk_scan_cache_dir)"
+    cache_path="$(get_disk_scan_cache_path "$cache_key")"
+
+    mkdir -p -- "$cache_dir" || return 1
+    temp_path="$(mktemp "${cache_dir}/.scan-cache.XXXXXX")" || return 1
+
+    if ! {
+        printf '%s\n' "$DISK_SCAN_CACHE_MAGIC"
+        cat -- "$source_file"
+    } > "$temp_path"; then
+        rm -f -- "$temp_path"
+        return 1
+    fi
+
+    if ! mv -f -- "$temp_path" "$cache_path"; then
+        rm -f -- "$temp_path"
+        return 1
+    fi
+}
+
+invalidate_disk_scan_cache() {
+    local cache_dir
+    cache_dir="$(get_disk_scan_cache_dir)"
+
+    [[ -d "$cache_dir" ]] || return 0
+    find "$cache_dir" -maxdepth 1 -type f -name "${DISK_SCAN_CACHE_MAGIC}-*.cache" -delete 2>/dev/null || return 1
+}
+
+collect_cached_disk_scan() {
+    local output_file="${1:-}"
+    local cache_key="${2:-}"
+    local ttl_sec="${3:-0}"
+    shift 3
+
+    [[ -n "$output_file" ]] || return 1
+
+    if read_disk_scan_cache "$cache_key" "$ttl_sec" > "$output_file"; then
+        return 0
+    fi
+
+    SCAN_CACHE_LAST_STATUS="miss"
+    SCAN_CACHE_LAST_AGE_SEC=0
+
+    if ! "$@" > "$output_file"; then
+        return 1
+    fi
+
+    write_disk_scan_cache_from_file "$cache_key" "$output_file" || true
+}
+
+run_cached_disk_scan() {
+    local cache_key="${1:-}"
+    local ttl_sec="${2:-0}"
+    shift 2
+
+    local output_file=""
+    output_file="$(mktemp "${TMPDIR:-/tmp}/vps-cleaner-scan.XXXXXX")" || return 1
+
+    if ! collect_cached_disk_scan "$output_file" "$cache_key" "$ttl_sec" "$@"; then
+        rm -f -- "$output_file"
+        return 1
+    fi
+
+    cat -- "$output_file"
+    rm -f -- "$output_file"
+}
+
+find_supports_printf() {
+    if [[ -z "$FIND_SUPPORTS_PRINTF" ]]; then
+        if find . -maxdepth 0 -printf '' >/dev/null 2>&1; then
+            FIND_SUPPORTS_PRINTF=1
+        else
+            FIND_SUPPORTS_PRINTF=0
+        fi
+    fi
+
+    [[ "$FIND_SUPPORTS_PRINTF" -eq 1 ]]
+}
+
+extract_size_for_path() {
+    local scan_output="${1-}"
+    local target_path="${2:-/}"
+
+    awk -F '\t' -v target_path="$target_path" '
+        $2 == target_path {
+            print $1
+            exit
+        }
+    ' <<< "$scan_output"
+}
+
+filter_disk_usage_lines_by_depth() {
+    local scan_output="${1-}"
+    local min_depth="${2:-0}"
+    local max_depth="${3:-0}"
+    local limit="${4:-0}"
+
+    awk -F '\t' -v min_depth="$min_depth" -v max_depth="$max_depth" -v limit="$limit" '
+        function path_depth(path, normalized) {
+            normalized = path
+            if (normalized == "/") {
+                return 0
+            }
+            sub(/^\/+/, "", normalized)
+            if (normalized == "") {
+                return 0
+            }
+            return split(normalized, segments, "/")
+        }
+
+        NF >= 2 {
+            depth = path_depth($2)
+            if (depth < min_depth || depth > max_depth) {
+                next
+            }
+
+            print $0
+            emitted += 1
+            if (limit > 0 && emitted >= limit) {
+                exit
+            }
+        }
+    ' <<< "$scan_output"
+}
+
+print_disk_usage_rows() {
+    local usage_lines="${1-}"
+    local total_size_bytes="${2:-0}"
+    local label_width="${3:-32}"
+    local bar_width="${4:-18}"
+
+    [[ "$total_size_bytes" =~ ^[0-9]+$ ]] || total_size_bytes=0
+    if (( total_size_bytes <= 0 )); then
+        total_size_bytes=1
+    fi
+
+    while IFS=$'\t' read -r size path; do
+        [[ -n "${size:-}" && -n "${path:-}" ]] || continue
+        [[ "$size" =~ ^[0-9]+$ ]] || continue
+
+        local pct=0
+        pct=$(( size * 100 / total_size_bytes ))
+        (( pct > 100 )) && pct=100
+        (( pct < 0 )) && pct=0
+
+        printf '  %-*s %10s  ' \
+            "$label_width" "$(truncate_path_for_display "$path" "$label_width")" "$(format_size "$size")"
+        draw_bar "$pct" "$bar_width"
+        printf '\n'
+    done <<< "$usage_lines"
+}
+
+print_top_file_rows() {
+    local file_lines="${1-}"
+    local label_width="${2:-32}"
+
+    while IFS=' ' read -r size path; do
+        [[ -n "${size:-}" && -n "${path:-}" ]] || continue
+        printf '  %-*s %10s\n' \
+            "$label_width" "$(truncate_path_for_display "$path" "$label_width")" "$(format_size "$size")"
+    done <<< "$file_lines"
+}
+
+scan_disk_overview_directory_tree() {
+    run_timed_pipeline "$DISK_OVERVIEW_SCAN_TIMEOUT_SEC" \
+        "du -x -B1 -d ${DISK_OVERVIEW_SCAN_DEPTH} / --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/snap --exclude=/var/lib/docker/rootfs/overlayfs --exclude=/var/lib/docker/overlay2 2>/dev/null | sort -rn"
+}
+
+scan_disk_overview_top_files() {
+    local scan_cmd=""
+    if find_supports_printf; then
+        scan_cmd="find /var /usr /home /root /opt /srv /tmp -xdev -type f -not -path '/var/lib/docker/rootfs/overlayfs/*' -not -path '/var/lib/docker/overlay2/*' -printf '%s %p\n' 2>/dev/null | sort -rn | head -${DISK_OVERVIEW_TOP_FILES_LIMIT}"
+    else
+        scan_cmd="find /var /usr /home /root /opt /srv /tmp -xdev -type f -not -path '/var/lib/docker/rootfs/overlayfs/*' -not -path '/var/lib/docker/overlay2/*' -exec stat -c '%s %n' {} + 2>/dev/null | sort -rn | head -${DISK_OVERVIEW_TOP_FILES_LIMIT}"
+    fi
+
+    run_timed_pipeline "$DISK_OVERVIEW_SCAN_TIMEOUT_SEC" "$scan_cmd"
+}
+
+get_cached_disk_overview_directory_tree() {
+    local output_file="${1:-}"
+    collect_cached_disk_scan "$output_file" "disk-overview-tree-depth-${DISK_OVERVIEW_SCAN_DEPTH}" "$DISK_SCAN_CACHE_TTL_SEC" scan_disk_overview_directory_tree
+}
+
+get_cached_disk_overview_top_files() {
+    local output_file="${1:-}"
+    collect_cached_disk_scan "$output_file" "disk-overview-top-files" "$DISK_SCAN_CACHE_TTL_SEC" scan_disk_overview_top_files
+}
+
+scan_large_files_by_threshold() {
+    local min_size_mb="${1:-0}"
+    local scan_cmd=""
+
+    if find_supports_printf; then
+        scan_cmd="find / -xdev -type f -not -path '/proc/*' -not -path '/sys/*' -not -path '/dev/*' -not -path '/run/*' -not -path '/snap/*' -size +${min_size_mb}M -printf '%s %p\n' 2>/dev/null | sort -rn"
+    else
+        scan_cmd="find / -xdev -type f -not -path '/proc/*' -not -path '/sys/*' -not -path '/dev/*' -not -path '/run/*' -not -path '/snap/*' -size +${min_size_mb}M -exec stat -c '%s %n' {} + 2>/dev/null | sort -rn"
+    fi
+
+    bash -o pipefail -c "$scan_cmd"
+}
+
+get_cached_large_files_scan() {
+    local output_file="${1:-}"
+    local min_size_mb="${2:-0}"
+    collect_cached_disk_scan "$output_file" "large-files-${min_size_mb}mb" "$DISK_SCAN_CACHE_TTL_SEC" scan_large_files_by_threshold "$min_size_mb"
 }
 
 # ============================================================================
@@ -973,28 +1304,36 @@ truncate_matching_files_and_count_removed() {
 # --- Option 1: Disk Space Overview -----------------------------------------
 
 show_disk_overview() {
-    local choice_before
-    local ui_width mount_col_width bar_width fs_table_width inode_mount_col_width inode_table_width
-    local top_dirs_path_width top_files_path_width
+    local ui_width mount_col_width fs_bar_width fs_table_width inode_mount_col_width inode_table_width
+    local usage_bar_width usage_table_width usage_path_width top_files_path_width
+    local dir_scan_output top_files_output root_lines hotspot_lines total_dir_size
+    local dir_scan_file top_files_file
     record_disk_start
     ui_width="$(get_ui_content_width)"
+    dir_scan_file="$(mktemp "${TMPDIR:-/tmp}/vps-cleaner-overview.XXXXXX")" || return 1
+    top_files_file="$(mktemp "${TMPDIR:-/tmp}/vps-cleaner-overview.XXXXXX")" || {
+        rm -f -- "$dir_scan_file"
+        return 1
+    }
 
-    bar_width=20
-    mount_col_width=$(( ui_width - bar_width - 46 ))
+    fs_bar_width=20
+    mount_col_width=$(( ui_width - fs_bar_width - 46 ))
     (( mount_col_width > 32 )) && mount_col_width=32
     (( mount_col_width < 12 )) && mount_col_width=12
-    bar_width=$(( ui_width - mount_col_width - 46 ))
-    (( bar_width > 24 )) && bar_width=24
-    (( bar_width < 8 )) && bar_width=8
-    fs_table_width=$(( mount_col_width + bar_width + 46 ))
+    fs_bar_width=$(( ui_width - mount_col_width - 46 ))
+    (( fs_bar_width > 24 )) && fs_bar_width=24
+    (( fs_bar_width < 8 )) && fs_bar_width=8
+    fs_table_width=$(( mount_col_width + fs_bar_width + 46 ))
 
     inode_mount_col_width=$(( ui_width - 39 ))
     (( inode_mount_col_width > 32 )) && inode_mount_col_width=32
     (( inode_mount_col_width < 12 )) && inode_mount_col_width=12
     inode_table_width=$(( inode_mount_col_width + 39 ))
 
-    top_dirs_path_width=$(( ui_width - 12 ))
-    (( top_dirs_path_width < 20 )) && top_dirs_path_width=20
+    usage_bar_width=18
+    usage_path_width=$(( ui_width - usage_bar_width - 20 ))
+    (( usage_path_width < 24 )) && usage_path_width=24
+    usage_table_width=$(( usage_path_width + usage_bar_width + 20 ))
     top_files_path_width=$(( ui_width - 12 ))
     (( top_files_path_width < 20 )) && top_files_path_width=20
 
@@ -1022,11 +1361,71 @@ show_disk_overview() {
 
         printf '  %-*s %10s %10s %10s %5s  ' \
             "$mount_col_width" "$(truncate_for_table "$mp" "$mount_col_width")" "$sz_h" "$used_h" "$avail_h" "$pct"
-        draw_bar "$pct_num" "$bar_width"
+        draw_bar "$pct_num" "$fs_bar_width"
         printf '\n'
     done < <(df -P -B1 -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {print}')
 
-    # Inode usage
+    echo ""
+    printf '  %s%sWhere Space Goes (Root Directories):%s\n' "$BOLD" "$WHITE" "$RESET"
+    print_separator "$usage_table_width"
+
+    printf '  %s\n' "Building detailed directory breakdown (cached for $(format_scan_cache_age "$DISK_SCAN_CACHE_TTL_SEC"))..."
+    if get_cached_disk_overview_directory_tree "$dir_scan_file"; then
+        dir_scan_output="$(cat -- "$dir_scan_file")"
+        if [[ "$SCAN_CACHE_LAST_STATUS" == "hit" ]]; then
+            print_info "Using cached directory breakdown from $(format_scan_cache_age "$SCAN_CACHE_LAST_AGE_SEC") ago."
+        fi
+
+        total_dir_size="$(extract_size_for_path "$dir_scan_output" "/")"
+        if [[ ! "$total_dir_size" =~ ^[0-9]+$ ]] || (( total_dir_size <= 0 )); then
+            total_dir_size="$(get_total_used_bytes)"
+        fi
+
+        root_lines="$(filter_disk_usage_lines_by_depth "$dir_scan_output" 1 1 "$DISK_OVERVIEW_ROOT_LIMIT")"
+        if [[ -n "$root_lines" ]]; then
+            print_disk_usage_rows "$root_lines" "$total_dir_size" "$usage_path_width" "$usage_bar_width"
+        else
+            print_warning "No root-directory data available from the scan."
+        fi
+    else
+        print_warning "Detailed directory scan timed out. Showing filesystem summary only."
+    fi
+
+    echo ""
+    printf '  %s%sBiggest Hotspots (Exact Paths):%s\n' "$BOLD" "$WHITE" "$RESET"
+    print_separator "$usage_table_width"
+
+    if [[ -n "${dir_scan_output:-}" ]]; then
+        hotspot_lines="$(filter_disk_usage_lines_by_depth "$dir_scan_output" 2 "$DISK_OVERVIEW_SCAN_DEPTH" "$DISK_OVERVIEW_HOTSPOT_LIMIT")"
+        if [[ -n "$hotspot_lines" ]]; then
+            print_disk_usage_rows "$hotspot_lines" "$total_dir_size" "$usage_path_width" "$usage_bar_width"
+        else
+            print_warning "No detailed hotspots found beyond the root directories."
+        fi
+    else
+        print_warning "Hotspot breakdown is unavailable because the directory scan did not complete."
+    fi
+
+    echo ""
+    printf '  %s%sLargest Individual Files:%s\n' "$BOLD" "$WHITE" "$RESET"
+    print_separator "$usage_table_width"
+
+    printf '  %s\n' "Scanning large files (cached for $(format_scan_cache_age "$DISK_SCAN_CACHE_TTL_SEC"))..."
+    if get_cached_disk_overview_top_files "$top_files_file"; then
+        top_files_output="$(cat -- "$top_files_file")"
+        if [[ "$SCAN_CACHE_LAST_STATUS" == "hit" ]]; then
+            print_info "Using cached file ranking from $(format_scan_cache_age "$SCAN_CACHE_LAST_AGE_SEC") ago."
+        fi
+
+        if [[ -n "$top_files_output" ]]; then
+            print_top_file_rows "$top_files_output" "$top_files_path_width"
+        else
+            print_info "No files found in the scanned locations."
+        fi
+    else
+        print_warning "Large file scan timed out. Use 'Find Large Files' for a deeper on-demand scan."
+    fi
+
     echo ""
     printf '  %s%sInode Usage:%s\n' "$BOLD" "$WHITE" "$RESET"
     print_separator "$inode_table_width"
@@ -1044,45 +1443,7 @@ show_disk_overview() {
             "$inode_mount_col_width" "$(truncate_for_table "$mp" "$inode_mount_col_width")" "$total" "$used" "$free" "$pct"
     done < <(df -P -i -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {print}')
 
-    # Top 15 directories
-    echo ""
-    printf '  %s%sTop 15 Largest Directories (under /):%s\n' "$BOLD" "$WHITE" "$RESET"
-    print_separator
-
-    local top_dirs_output
-    printf '  %s\n' "Scanning directories (can take up to ${DISK_OVERVIEW_SCAN_TIMEOUT_SEC}s)..."
-    if top_dirs_output="$(run_timed_pipeline "$DISK_OVERVIEW_SCAN_TIMEOUT_SEC" "du -x -h -d 2 / --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/snap --exclude=/var/lib/docker/rootfs/overlayfs --exclude=/var/lib/docker/overlay2 2>/dev/null | sort -rh | head -15")"; then
-        while IFS= read -r dline; do
-            local dsize dpath
-            [[ -z "$dline" ]] && continue
-            dsize="${dline%%[[:space:]]*}"
-            dpath="$(echo "$dline" | sed 's/^[^[:space:]]*[[:space:]]*//')"
-            if [[ -z "$dpath" || "$dpath" == "$dline" ]]; then
-                printf '  %s\n' "$(truncate_path_for_display "$dline" "$ui_width")"
-            else
-                printf '  %10s  %s\n' "$dsize" "$(truncate_path_for_display "$dpath" "$top_dirs_path_width")"
-            fi
-        done <<< "$top_dirs_output"
-    else
-        print_warning "Directory scan timed out. Showing partial or no data."
-    fi
-
-    # Top 10 files
-    echo ""
-    printf '  %s%sTop 10 Largest Files:%s\n' "$BOLD" "$WHITE" "$RESET"
-    print_separator
-
-    local top_files_output
-    printf '  %s\n' "Scanning files (can take up to ${DISK_OVERVIEW_SCAN_TIMEOUT_SEC}s)..."
-    if top_files_output="$(run_timed_pipeline "$DISK_OVERVIEW_SCAN_TIMEOUT_SEC" "find /var /usr /home /root /opt /srv /tmp -xdev -type f -not -path '/var/lib/docker/rootfs/overlayfs/*' -not -path '/var/lib/docker/overlay2/*' -exec stat -c '%s %n' {} + 2>/dev/null | sort -rn | head -10")"; then
-        while IFS=' ' read -r size fpath; do
-            [[ -z "${size:-}" || -z "${fpath:-}" ]] && continue
-            printf '  %10s  %s\n' "$(format_size "$size")" "$(truncate_path_for_display "$fpath" "$top_files_path_width")"
-        done <<< "$top_files_output"
-    else
-        print_warning "Large file scan timed out. Showing partial or no data."
-    fi
-
+    rm -f -- "$dir_scan_file" "$top_files_file"
     echo ""
     pause
 }
@@ -1203,6 +1564,9 @@ quick_clean() {
     echo ""
     local freed
     freed=$(calc_freed_since_start)
+    if [[ "$DRY_RUN" -eq 0 ]] && (( total_est > 0 || freed > 0 )); then
+        invalidate_disk_scan_cache || true
+    fi
     print_success "Freed on filesystem: $(format_size "$freed")"
     if (( total_est > 0 )); then
         print_info "Estimated cleaned data: $(format_size "$total_est")"
@@ -1571,6 +1935,9 @@ clean_all_logs() {
 
     local freed
     freed=$(calc_freed_since_start)
+    if [[ "$DRY_RUN" -eq 0 ]] && (( removed_varlog > 0 || freed > 0 )); then
+        invalidate_disk_scan_cache || true
+    fi
     print_success "Removed from /var/log: $(format_size "$removed_varlog")"
     print_success "Freed on filesystem: $(format_size "$freed")"
     if (( removed_varlog > 0 && freed == 0 )); then
@@ -2217,14 +2584,23 @@ find_large_files() {
         fi
     fi
 
-    printf '\n  Searching for files larger than %dMB...\n\n' "$LARGE_FILE_MIN_SIZE_MB"
+    printf '\n  Searching for files larger than %dMB (cached for %s)...\n\n' \
+        "$LARGE_FILE_MIN_SIZE_MB" "$(format_scan_cache_age "$DISK_SCAN_CACHE_TTL_SEC")"
 
     TEMP_FILE="$(mktemp /tmp/vps-cleaner-largefiles.XXXXXX)"
 
-    find / -xdev -type f -not -path '/proc/*' -not -path '/sys/*' -not -path '/dev/*' \
-        -not -path '/run/*' -not -path '/snap/*' \
-        -size +"${LARGE_FILE_MIN_SIZE_MB}M" -exec stat -c '%s %n' {} + 2>/dev/null \
-        | sort -rn > "$TEMP_FILE"
+    if ! get_cached_large_files_scan "$TEMP_FILE" "$LARGE_FILE_MIN_SIZE_MB"; then
+        print_error "Large file scan failed."
+        rm -f "$TEMP_FILE" 2>/dev/null
+        TEMP_FILE=""
+        pause
+        return
+    fi
+
+    if [[ "$SCAN_CACHE_LAST_STATUS" == "hit" ]]; then
+        print_info "Using cached large-file scan from $(format_scan_cache_age "$SCAN_CACHE_LAST_AGE_SEC") ago."
+        echo ""
+    fi
 
     local count=0
     while IFS=' ' read -r size fpath; do
@@ -2312,6 +2688,9 @@ find_large_files() {
     TEMP_FILE=""
 
     local freed; freed=$(calc_freed_since_start)
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+        invalidate_disk_scan_cache || true
+    fi
     print_success "Freed: $(format_size "$freed")"
     log_action "large-files" "delete-selected" "$freed"
     pause
@@ -2472,6 +2851,9 @@ full_deep_clean() {
     echo ""
     print_separator
     local freed; freed=$(calc_freed_since_start)
+    if [[ "$DRY_RUN" -eq 0 ]] && (( est_total > 0 || freed > 0 )); then
+        invalidate_disk_scan_cache || true
+    fi
     printf '\n'
     if (( had_errors == 1 )); then
         print_warning "Full Deep Clean finished with warnings. Freed: $(format_size "$freed")"

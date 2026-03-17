@@ -22,7 +22,11 @@ test_find_large_files_handles_eof_on_size_input() {
 
         get_ui_content_width() { echo 80; }
         read_interactive_line() { READ_LINE_VALUE=""; return 1; }
-        find() { return 0; }
+        get_cached_large_files_scan() {
+            SCAN_CACHE_LAST_STATUS="miss"
+            : > "$1"
+            return 0
+        }
         format_size() { echo "0 B"; }
         print_info() { :; }
         print_error() { :; }
@@ -53,7 +57,10 @@ test_find_large_files_handles_eof_on_selection_input() {
             READ_LINE_VALUE=""
             return 1
         }
-        find() { printf '12345 /tmp/test-large-file.log\n'; }
+        get_cached_large_files_scan() {
+            SCAN_CACHE_LAST_STATUS="miss"
+            printf '12345 /tmp/test-large-file.log\n' > "$1"
+        }
         format_size() { echo "12.06 KB"; }
         truncate_path_for_display() { printf '%s' "$1"; }
         print_info() { :; }
