@@ -163,6 +163,74 @@ EOF
     trap - RETURN
 }
 
+test_calculate_file_fingerprint_ignores_line_endings() {
+    local tmpdir lf crlf
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf -- "$tmpdir"' RETURN
+
+    lf="$tmpdir/lf.sh"
+    crlf="$tmpdir/crlf.sh"
+
+    printf '#!/usr/bin/env bash\necho same\n' > "$lf"
+    printf '#!/usr/bin/env bash\r\necho same\r\n' > "$crlf"
+
+    assert_eq "$(calculate_file_fingerprint "$lf")" "$(calculate_file_fingerprint "$crlf")" "fingerprint ignores line-ending differences"
+
+    rm -rf -- "$tmpdir"
+    trap - RETURN
+}
+
+test_are_script_contents_different() {
+    local tmpdir left same different
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf -- "$tmpdir"' RETURN
+
+    left="$tmpdir/left.sh"
+    same="$tmpdir/same.sh"
+    different="$tmpdir/different.sh"
+
+    printf '#!/usr/bin/env bash\necho same\n' > "$left"
+    printf '#!/usr/bin/env bash\r\necho same\r\n' > "$same"
+    printf '#!/usr/bin/env bash\necho different\n' > "$different"
+
+    assert_failure "normalized identical scripts are not different" are_script_contents_different "$left" "$same"
+    assert_success "different scripts compare as different" are_script_contents_different "$left" "$different"
+
+    rm -rf -- "$tmpdir"
+    trap - RETURN
+}
+
+test_prepare_remote_update_script() {
+    local tmpfile
+    tmpfile="$(mktemp)"
+    trap 'rm -f -- "$tmpfile"' RETURN
+
+    assert_success "downloads, stamps, and validates remote update script" bash -lc '
+        set -euo pipefail
+        source "$1"
+        download_remote_script() {
+            local output_path="${1:-}"
+            printf "#!/usr/bin/env bash\nreadonly SCRIPT_VERSION=\"0.0.1\"\n" > "$output_path"
+        }
+        prepare_remote_update_script "$2" "4.5.6" 1
+    ' _ "$REPO_ROOT/vps-cleaner.sh" "$tmpfile"
+
+    assert_eq "$(extract_script_version_from_file "$tmpfile")" "4.5.6" "prepared update script is stamped with expected version"
+
+    assert_failure "rejects invalid prepared update script" bash -lc '
+        set -euo pipefail
+        source "$1"
+        download_remote_script() {
+            local output_path="${1:-}"
+            printf "broken\n" > "$output_path"
+        }
+        prepare_remote_update_script "$2" "9.9.9" 1
+    ' _ "$REPO_ROOT/vps-cleaner.sh" "$tmpfile"
+
+    rm -f -- "$tmpfile"
+    trap - RETURN
+}
+
 test_install_script_atomically() {
     local tmpdir source target
     tmpdir="$(mktemp -d)"
@@ -198,6 +266,9 @@ main() {
     test_download_remote_script_with_curl_stub
     test_stamp_script_version_in_file
     test_install_script_atomically
+    test_calculate_file_fingerprint_ignores_line_endings
+    test_are_script_contents_different
+    test_prepare_remote_update_script
     printf 'PASS: vps-cleaner update helper tests\n'
 }
 

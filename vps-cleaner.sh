@@ -3258,6 +3258,59 @@ validate_downloaded_script() {
     fi
 }
 
+prepare_remote_update_script() {
+    local output_path="${1:-}"
+    local expected_version="${2:-}"
+    local timeout_sec="${3:-30}"
+    [[ -n "$output_path" ]] || return 1
+
+    download_remote_script "$output_path" "$timeout_sec" || return 1
+    stamp_script_version_in_file "$output_path" "$expected_version" || return 1
+    validate_downloaded_script "$output_path" "$expected_version" || return 1
+}
+
+calculate_file_fingerprint() {
+    local file_path="${1:-}"
+    [[ -n "$file_path" && -f "$file_path" ]] || return 1
+
+    if command -v sha256sum &>/dev/null; then
+        tr -d '\r' < "$file_path" | sha256sum | awk '{print $1}'
+        return 0
+    fi
+
+    if command -v shasum &>/dev/null; then
+        tr -d '\r' < "$file_path" | shasum -a 256 | awk '{print $1}'
+        return 0
+    fi
+
+    if command -v openssl &>/dev/null; then
+        tr -d '\r' < "$file_path" | openssl dgst -sha256 -r | awk '{print $1}'
+        return 0
+    fi
+
+    command -v cksum &>/dev/null || return 1
+    tr -d '\r' < "$file_path" | cksum | awk '{print $1 ":" $2}'
+}
+
+are_script_contents_different() {
+    local left_path="${1:-}"
+    local right_path="${2:-}"
+    [[ -n "$left_path" && -f "$left_path" ]] || return 2
+    [[ -n "$right_path" && -f "$right_path" ]] || return 2
+
+    local left_fingerprint=""
+    local right_fingerprint=""
+
+    left_fingerprint="$(calculate_file_fingerprint "$left_path")" || return 2
+    right_fingerprint="$(calculate_file_fingerprint "$right_path")" || return 2
+
+    if [[ "$left_fingerprint" != "$right_fingerprint" ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
 install_script_atomically() {
     local source_path="${1:-}"
     local target_path="${2:-$INSTALL_PATH}"
@@ -3334,6 +3387,10 @@ install_self() {
     log_action "install" "install" "0"
 }
 
+installed_script_exists() {
+    [[ -f "$INSTALL_PATH" ]]
+}
+
 check_update() {
     echo ""
     if [[ "$HAS_CURL" -eq 0 ]] && [[ "$HAS_WGET" -eq 0 ]]; then
@@ -3345,6 +3402,8 @@ check_update() {
     local current_version=""
     local remote_version=""
     local compare_result=""
+    local temp_download=""
+    local same_version_update=0
 
     current_version="$(get_current_script_version 2>/dev/null || true)"
     [[ -z "$current_version" ]] && current_version="$SCRIPT_VERSION"
@@ -3374,45 +3433,74 @@ check_update() {
 
     if [[ "$compare_result" == "-1" ]]; then
         print_info "A newer version ($remote_version) is available."
-        if confirm "Download and install update?"; then
-            local temp_download=""
-            temp_download="$(mktemp "${TMPDIR:-/tmp}/vps-cleaner-update.XXXXXX")" || {
-                print_error "Failed to create temporary file for update."
-                return
-            }
-
-            if ! download_remote_script "$temp_download" 30; then
-                rm -f -- "$temp_download" 2>/dev/null || true
-                print_error "Failed to download update."
-                return
-            fi
-
-            if ! stamp_script_version_in_file "$temp_download" "$remote_version"; then
-                rm -f -- "$temp_download" 2>/dev/null || true
-                print_error "Failed to stamp downloaded update with version $remote_version."
-                return
-            fi
-
-            if ! validate_downloaded_script "$temp_download" "$remote_version"; then
-                rm -f -- "$temp_download" 2>/dev/null || true
-                print_error "Downloaded update failed validation."
-                return
-            fi
-
-            if ! install_script_atomically "$temp_download" "$INSTALL_PATH"; then
-                rm -f -- "$temp_download" 2>/dev/null || true
-                print_error "Failed to install update to $INSTALL_PATH."
-                return
-            fi
-            rm -f -- "$temp_download" 2>/dev/null || true
-
-            print_success "Updated to v${remote_version}. Restart the script to use the new version."
-            log_action "update" "updated-to-$remote_version" "0"
-        fi
     elif [[ "$compare_result" == "0" ]]; then
-        print_success "Already on the latest version."
+        local content_compare_status=0
+        temp_download="$(mktemp "${TMPDIR:-/tmp}/vps-cleaner-update.XXXXXX")" || {
+            print_error "Failed to create temporary file for update verification."
+            return
+        }
+
+        if ! prepare_remote_update_script "$temp_download" "$remote_version" 30; then
+            rm -f -- "$temp_download" 2>/dev/null || true
+            print_warning "Remote version matches current, but remote script contents could not be verified."
+            return
+        fi
+
+        if are_script_contents_different "$SELF_PATH" "$temp_download"; then
+            same_version_update=1
+        else
+            content_compare_status=$?
+        fi
+
+        if (( content_compare_status == 1 )); then
+            rm -f -- "$temp_download" 2>/dev/null || true
+            print_success "Already on the latest version."
+            return
+        fi
+
+        if (( content_compare_status != 0 )); then
+            rm -f -- "$temp_download" 2>/dev/null || true
+            print_warning "Remote version matches current, but script contents could not be compared safely."
+            return
+        fi
+
+        print_info "A newer build of version $remote_version is available."
     else
         print_info "Current version ($current_version) is newer than remote ($remote_version)."
+        return
+    fi
+
+    if ! confirm "Download and install update?"; then
+        rm -f -- "$temp_download" 2>/dev/null || true
+        return
+    fi
+
+    if [[ -z "$temp_download" ]]; then
+        temp_download="$(mktemp "${TMPDIR:-/tmp}/vps-cleaner-update.XXXXXX")" || {
+            print_error "Failed to create temporary file for update."
+            return
+        }
+
+        if ! prepare_remote_update_script "$temp_download" "$remote_version" 30; then
+            rm -f -- "$temp_download" 2>/dev/null || true
+            print_error "Failed to prepare downloaded update."
+            return
+        fi
+    fi
+
+    if ! install_script_atomically "$temp_download" "$INSTALL_PATH"; then
+        rm -f -- "$temp_download" 2>/dev/null || true
+        print_error "Failed to install update to $INSTALL_PATH."
+        return
+    fi
+
+    rm -f -- "$temp_download" 2>/dev/null || true
+    if (( same_version_update == 1 )); then
+        print_success "Updated script contents for v${remote_version}. Restart the script to use the refreshed build."
+        log_action "update" "updated-build-$remote_version" "0"
+    else
+        print_success "Updated to v${remote_version}. Restart the script to use the new version."
+        log_action "update" "updated-to-$remote_version" "0"
     fi
 }
 
@@ -3438,7 +3526,7 @@ uninstall_self() {
 
 auto_update_check() {
     # Only check if installed and if we have curl/wget
-    if [[ ! -f "$INSTALL_PATH" ]]; then return; fi
+    if ! installed_script_exists; then return; fi
     if [[ "$HAS_CURL" -eq 0 ]] && [[ "$HAS_WGET" -eq 0 ]]; then return; fi
 
     local now
@@ -3468,7 +3556,38 @@ auto_update_check() {
         print_info "Update available: v${remote_version} (current: v${current_version})"
         print_info "Use menu option 11 to update."
         echo ""
+        return
     fi
+
+    if [[ "$compare_result" != "0" ]]; then
+        return
+    fi
+
+    local temp_download=""
+    local content_compare_status=0
+    [[ -f "$SELF_PATH" ]] || return
+
+    temp_download="$(mktemp "${TMPDIR:-/tmp}/vps-cleaner-update.XXXXXX")" || return
+    if ! prepare_remote_update_script "$temp_download" "$remote_version" 15; then
+        rm -f -- "$temp_download" 2>/dev/null || true
+        return
+    fi
+
+    if are_script_contents_different "$SELF_PATH" "$temp_download"; then
+        rm -f -- "$temp_download" 2>/dev/null || true
+        print_info "Update available: newer build of v${remote_version} detected."
+        print_info "Use menu option 11 to update."
+        echo ""
+        return
+    fi
+
+    content_compare_status=$?
+    if (( content_compare_status != 1 )); then
+        rm -f -- "$temp_download" 2>/dev/null || true
+        return
+    fi
+
+    rm -f -- "$temp_download" 2>/dev/null || true
 }
 
 # ============================================================================
