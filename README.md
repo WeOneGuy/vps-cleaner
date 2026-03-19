@@ -22,6 +22,9 @@ curl -fsSL https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.s
 
 # Or with wget
 wget -qO- https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.sh | bash
+
+# One-time run of the new CLI command
+curl -fsSL https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.sh | bash -s -- top /var
 ```
 
 This starts `vps-cleaner` in ephemeral mode (one-time run, no auto-install).
@@ -55,6 +58,9 @@ curl -fsSL https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.s
 This downloads the script, runs it once, and removes the temporary file on exit.
 No automatic installation to `/usr/local/bin/vps-cleaner` is performed.
 Permanent install is optional from menu option `11) Install/Update vps-cleaner`.
+CLI arguments are forwarded to the one-time launcher, so commands such as
+`curl -fsSL https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.sh | bash -s -- top /var`
+work without a full install.
 
 Version metadata for updates is managed through the repository `VERSION` file.
 
@@ -67,6 +73,13 @@ chmod +x vps-cleaner.sh
 sudo cp vps-cleaner.sh /usr/local/bin/vps-cleaner
 ```
 
+For contributors, the editable sources live in `src/`.
+After changing them, rebuild the single-file release artifact with:
+
+```bash
+./scripts/build.sh
+```
+
 ### Run Without Installing
 
 ```bash
@@ -75,7 +88,31 @@ sudo bash vps-cleaner.sh
 
 ## Usage
 
-Run `vps-cleaner` (or `sudo bash vps-cleaner.sh`) to launch the interactive menu. Select an option by number:
+### CLI Commands
+
+Run `vps-cleaner --help` to print the CLI command list:
+
+| Command | Description |
+|--------|-------------|
+| `vps-cleaner` | Launch the interactive menu |
+| `vps-cleaner menu` | Explicitly launch the interactive menu |
+| `vps-cleaner top [PATH] [--limit N]` | Show the largest direct subdirectories and files in `PATH` (defaults to current directory) |
+| `vps-cleaner --help` | Print available CLI commands and examples |
+
+Examples:
+
+```bash
+# Installed binary
+vps-cleaner top /var --limit 15
+vps-cleaner top
+
+# One-time launcher
+curl -fsSL https://raw.githubusercontent.com/WeOneGuy/vps-cleaner/main/install.sh | bash -s -- top /var
+```
+
+### Interactive Menu
+
+Run `vps-cleaner` (or `vps-cleaner menu`, or `sudo bash vps-cleaner.sh menu`) to launch the interactive menu. Select an option by number:
 
 | Option | Description |
 |--------|-------------|
